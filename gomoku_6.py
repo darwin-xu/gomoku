@@ -60,6 +60,8 @@ class Gomoku:
 
     def getBoard(self):
         return self.board
+
+
 class GomokuGUI:
     def __init__(self, root, game, player):
         self.root = root
@@ -67,7 +69,9 @@ class GomokuGUI:
         self.player = player()
         self.canvas_size = 600
         self.square_size = self.canvas_size // self.game.size
-        self.canvas = tk.Canvas(self.root, width=self.canvas_size, height=self.canvas_size)
+        self.canvas = tk.Canvas(
+            self.root, width=self.canvas_size, height=self.canvas_size
+        )
         self.canvas.pack()
         self.canvas.bind("<Button-1>", self.on_click)
         self.draw_board()
@@ -90,6 +94,7 @@ class GomokuGUI:
     def on_click(self, event):
         if not self.game.game_over:
             x, y = int(event.x / self.square_size), int(event.y / self.square_size)
+            print("x = %d, y = %d" % (x, y))
             if self.game.make_move(x, y):
                 self.draw_piece(x, y)
                 if self.game.game_over:
@@ -101,7 +106,9 @@ class GomokuGUI:
                         self.draw_piece(x, y)
                         if self.game.game_over:
                             winner = self.game.current_player
-                            tk.messagebox.showinfo("Game Over", f"Player {winner} wins!")
+                            tk.messagebox.showinfo(
+                                "Game Over", f"Player {winner} wins!"
+                            )
 
     def draw_piece(self, x, y):
         color = "black" if self.game.current_player == "O" else "white"
@@ -115,6 +122,8 @@ class GomokuGUI:
             center_y + radius,
             fill=color,
         )
+
+
 class DummyPlayer:
     def ratePoint(self, x, y, board):
         directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
@@ -153,18 +162,35 @@ class DummyPlayer:
             for j in range(15):
                 if board[i][j] == ".":
                     ratingBoard[i][j] = self.ratePoint(i, j, board)
+        for i in range(15):
+            for j in range(15):
+                print("%5.2f, " % ratingBoard[j][i], end="")
+            print()
+
+        print()
+
         return ratingBoard
 
     def nextMove(self, board):
+        # for i in range(15):
+        #     for j in range(15):
+        #         print("%s, " % board[j][i], end="")
+        #     print()
+        # print()
+        
+        
         max_rating = -1
         best_move = None
         rating_board = self.rateBoard(board)
         for i in range(15):
             for j in range(15):
                 if board[i][j] == "." and rating_board[i][j] > max_rating:
+                    print("rating_board[%d][%d] = %f" % (i, j, rating_board[i][j]))
                     max_rating = rating_board[i][j]
                     best_move = (i, j)
         return best_move
+
+
 if __name__ == "__main__":
     root = tk.Tk()
     root.title("Gomoku")
