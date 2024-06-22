@@ -94,7 +94,7 @@ class GomokuGUI:
     def on_click(self, event):
         if not self.game.game_over:
             x, y = int(event.x / self.square_size), int(event.y / self.square_size)
-            print("x = %d, y = %d" % (x, y))
+            #print("x = %d, y = %d" % (x, y))
             if self.game.make_move(x, y):
                 self.draw_piece(x, y)
                 if self.game.game_over:
@@ -132,26 +132,28 @@ class DummyPlayer:
             for i in range(1, 5):
                 nx, ny = x + i * dx, y + i * dy
                 if 0 <= nx < 15 and 0 <= ny < 15 and board[nx][ny] == "X":
-                    rate += 0.75 / i
+                    rate += (1+i)
+               # if i==3: rate+=2
                 else:
                     break
             for i in range(1, 5):
                 nx, ny = x - i * dx, y - i * dy
                 if 0 <= nx < 15 and 0 <= ny < 15 and board[nx][ny] == "X":
-                    rate += 0.75 / i
+                    rate += (1+i)
+                #if i==3: rate+=2
                 else:
                     break
         for dx, dy in directions:
             for i in range(1, 5):
                 nx, ny = x + i * dx, y + i * dy
                 if 0 <= nx < 15 and 0 <= ny < 15 and board[nx][ny] == "O":
-                    rate += 4 / i
+                    rate += (1+i) 
                 else:
                     break
             for i in range(1, 5):
                 nx, ny = x - i * dx, y - i * dy
                 if 0 <= nx < 15 and 0 <= ny < 15 and board[nx][ny] == "O":
-                    rate += 4 / i
+                    rate += (1+i)
                 else:
                     break
         return rate
@@ -185,7 +187,7 @@ class DummyPlayer:
         for i in range(15):
             for j in range(15):
                 if board[i][j] == "." and rating_board[i][j] > max_rating:
-                    print("rating_board[%d][%d] = %f" % (i, j, rating_board[i][j]))
+                    #print("rating_board[%d][%d] = %f" % (i, j, rating_board[i][j]))
                     max_rating = rating_board[i][j]
                     best_move = (i, j)
         return best_move
