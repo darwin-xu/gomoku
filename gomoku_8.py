@@ -5,6 +5,7 @@
 import tkinter as tk
 from tkinter import messagebox
 import random
+from collections import deque
 
 
 class Gomoku:
@@ -102,6 +103,9 @@ class GomokuGUI:
                             tk.messagebox.showinfo(
                                 "Game Over", f"Player {winner} wins!"
                             )
+                    else:
+                        # Shouldn't happen, throw an error
+                        raise ValueError("Invalid move")
 
     def draw_piece(self, x, y):
         color = "black" if self.game.current_player == "X" else "white"
@@ -120,41 +124,8 @@ class GomokuGUI:
 class DummyPlayer:
     def __init__(self):
         self.piece = "O"
-        self.directions = [
-            (1, 0),
-            (0, 1),
-            (1, 1),
-            (1, -1),
-            (-1, 1),
-            (-1, -1),
-            (0, -1),
-            (-1, 0),
-        ]
-        self.directions1 = [(1, 0), (0, 1), (1, 1), (-1, 1)]
+        self.directions = [(1, 0), (0, 1), (1, 1), (-1, 1)]
         self.scoreMap = {1: 10, 2: 100, 3: 1000, 4: 10000, 5: 100000}
-
-    def scoreForOnePiece(self, board, scoreBoard):
-        for x in range(len(board)):
-            for y in range(len(board[0])):
-                if board[x][y] == ".":
-                    pass
-                elif board[x][y] == self.piece:
-                    # check in all directions
-                    for i in range(len(self.directions)):
-                        dx, dy = self.directions[i]
-                        nx, ny = x + dx, y + dy
-                        if 0 <= nx < len(board) and 0 <= ny < len(board[0]):
-                            if board[nx][ny] == ".":
-                                scoreBoard[nx][ny] += 10
-                else:
-                    # check in all directions
-                    for i in range(len(self.directions)):
-                        dx, dy = self.directions[i]
-                        nx, ny = x + dx, y + dy
-                        if 0 <= nx < len(board) and 0 <= ny < len(board[0]):
-                            if board[nx][ny] == ".":
-                                scoreBoard[nx][ny] += 8
-        return scoreBoard
 
     def addScore(self, board, scoreBoard, x, y, score):
         if 0 <= x < len(board) and 0 <= y < len(board[0]) and board[x][y] == ".":
@@ -163,34 +134,77 @@ class DummyPlayer:
             print("Invalid position: ", x, y, score)
         return scoreBoard
 
-    def scoreForPieces(self, board, scoreBoard):
-        for x in range(len(board)):
-            for y in range(len(board[0])):
-                if board[x][y] == ".":
-                    pass
-                else:
-                    cur = board[x][y]
-                    # check 4 directions
-                    for i in range(len(self.directions1)):
-                        nx, ny = x, y
-                        dx, dy = self.directions1[i]
-                        count = 1
-                        for _ in range(5):
-                            nx, ny = nx + dx, ny + dy
-                            if 0 <= nx < len(board) and 0 <= ny < len(board[0]):
-                                if board[nx][ny] == cur:
-                                    count += 1
-                                else:
-                                    break
-                            else:
-                                break
-                        print("log: ", x, y, dx, dy, count)
-                        self.addScore(
-                            board, scoreBoard, x - dx, y - dy, self.scoreMap[count]
-                        )
-                        self.addScore(board, scoreBoard, nx, ny, self.scoreMap[count])
+    def scorePattern(self, pattern, scoreBoard):
+        pieces = [i[0] for i in pattern]
+        count = 0
+        cur = "."
+        for i in range(len(pieces)):
+            if pieces[i] == ".":
+                continue
+            elif cur == "." or cur == pieces[i]:
+                cur = pieces[i]
+                count += 1
+            else:
+                count = -1
+                break
 
-        return scoreBoard
+        if count > 0:
+            for p, x, y in pattern:
+                if p == ".":
+                    scoreBoard[x][y] += self.scoreMap[count]
+
+    def traverseHorizontal(self, board, scoreBoard):
+        for i in range(len(board)):
+            pattern = deque()
+            for j in range(len(board[0])):
+                # Get the next five pieces into pattern
+                pattern.append((board[i][j], i, j))
+                if len(pattern) > 5:
+                    pattern.popleft()
+                if len(pattern) == 5:
+                    self.scorePattern(pattern, scoreBoard)
+
+    def traverseVertical(self, board, scoreBoard):
+        for j in range(len(board[0])):
+            pattern = deque()
+            for i in range(len(board)):
+                pattern.append((board[i][j], i, j))
+                if len(pattern) > 5:
+                    pattern.popleft()
+                if len(pattern) == 5:
+                    self.scorePattern(pattern, scoreBoard)
+
+    def traverseDiagonal(self, board, scoreBoard):
+        rows = len(board)
+        cols = len(board[0])
+        for d in range(rows + cols - 1):
+            pattern = deque()
+            i = 0 if d < cols else d - cols + 1
+            j = d if d < cols else cols - 1
+            while i < rows and j >= 0:
+                pattern.append((board[i][j], i, j))
+                if len(pattern) > 5:
+                    pattern.popleft()
+                if len(pattern) == 5:
+                    self.scorePattern(pattern, scoreBoard)
+                i += 1
+                j -= 1
+
+    def traverseAntiDiagonal(self, board, scoreBoard):
+        rows = len(board)
+        cols = len(board[0])
+        for d in range(rows + cols - 1):
+            pattern = deque()
+            i = rows - d - 1 if d < rows else 0
+            j = 0 if d < rows else d - rows + 1
+            while i < rows and j < cols:
+                pattern.append((board[i][j], i, j))
+                if len(pattern) > 5:
+                    pattern.popleft()
+                if len(pattern) == 5:
+                    self.scorePattern(pattern, scoreBoard)
+                i += 1
+                j += 1
 
     def findHighestScore(self, scoreBoard):
         maxScore = -1
@@ -204,7 +218,10 @@ class DummyPlayer:
 
     def nextMove(self, board):
         scoreBoard = [[0 for _ in range(len(board[0]))] for _ in range(len(board))]
-        scoreBoard = self.scoreForPieces(board, scoreBoard)
+        self.traverseHorizontal(board, scoreBoard)
+        self.traverseVertical(board, scoreBoard)
+        self.traverseDiagonal(board, scoreBoard)
+        self.traverseAntiDiagonal(board, scoreBoard)
 
         print("Score Board:")
         for i in range(len(scoreBoard)):
