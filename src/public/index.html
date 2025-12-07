@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gomoku Game</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Gomoku</h1>
+            <p class="subtitle">Five in a Row</p>
+        </header>
+
+        <div class="game-info">
+            <div class="player-indicator">
+                <span class="current-player-label">Current Player:</span>
+                <div class="player-stone" id="currentPlayerStone"></div>
+            </div>
+            <div class="game-status" id="gameStatus">Game in progress</div>
+        </div>
+
+        <div class="game-board-container">
+            <canvas id="gameBoard" width="600" height="600"></canvas>
+        </div>
+
+        <div class="controls">
+            <button id="resetBtn" class="btn btn-primary">New Game</button>
+            <button id="undoBtn" class="btn btn-secondary">Undo</button>
+            <button id="aiMoveBtn" class="btn btn-secondary">AI Move</button>
+        </div>
+
+        <div class="settings">
+            <label>
+                <input type="checkbox" id="aiToggle">
+                Play against AI
+            </label>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
