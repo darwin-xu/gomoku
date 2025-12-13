@@ -4,9 +4,10 @@ from __future__ import annotations
 import argparse
 import random
 import sys
+import time
 from collections import deque
 from pathlib import Path
-from typing import Deque, List, Tuple
+from typing import Deque, List, Tuple, Optional
 
 # Allow running as a script: python python_ai/train.py
 if __package__ is None or __package__ == "":
@@ -23,6 +24,45 @@ from tqdm import tqdm
 from python_ai.gomoku_env import BOARD_SIZE
 from python_ai.model import PolicyValueNet, get_device, save_checkpoint, load_checkpoint, export_coreml
 from python_ai.self_play import Sample, apply_symmetry, play_self_game_mcts
+
+
+def _default_replay_path(model_path: Path) -> Path:
+    # Keep the original suffix (e.g., .pt) and append a sidecar extension.
+    return Path(str(model_path) + ".replay.npz")
+
+
+def save_replay_buffer(replay: Deque[Sample], path: Path) -> None:
+    if not replay:
+        return
+    states = np.stack([s.state for s in replay], axis=0).astype(np.float32, copy=False)
+    pis = np.stack([s.pi for s in replay], axis=0).astype(np.float32, copy=False)
+    zs = np.asarray([s.z for s in replay], dtype=np.float32)
+    players = np.asarray([s.player_to_move for s in replay], dtype=np.int8)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, states=states, pis=pis, zs=zs, players=players)
+
+
+def load_replay_buffer(path: Path, maxlen: int) -> Deque[Sample]:
+    replay: Deque[Sample] = deque(maxlen=maxlen)
+    if not path.exists():
+        return replay
+    data = np.load(path)
+    states = data["states"]
+    pis = data["pis"]
+    zs = data["zs"]
+    players = data.get("players")
+    if players is None:
+        players = np.ones((states.shape[0],), dtype=np.int8)
+    count = int(min(states.shape[0], maxlen))
+    start = int(states.shape[0] - count)
+    for i in range(start, start + count):
+        replay.append(Sample(
+            state=states[i],
+            pi=pis[i],
+            z=float(zs[i]),
+            player_to_move=int(players[i]),
+        ))
+    return replay
 
 
 class ReplayDataset(Dataset):
@@ -104,9 +144,18 @@ def train(args: argparse.Namespace) -> None:
         except Exception as e:
             print(f"Warning: failed to load optimizer state ({e}); continuing with fresh optimizer")
 
-    replay: Deque[Sample] = deque(maxlen=args.replay_size)
+    replay_path: Path = args.replay_path if args.replay_path is not None else _default_replay_path(args.model_path)
+    if args.resume:
+        replay = load_replay_buffer(replay_path, maxlen=args.replay_size)
+        if replay:
+            print(f"Loaded replay buffer: {len(replay)} samples from {replay_path}")
+        else:
+            replay = deque(maxlen=args.replay_size)
+    else:
+        replay = deque(maxlen=args.replay_size)
 
     for episode in range(start_episode, args.episodes + 1):
+        ep_t0 = time.perf_counter()
         model.eval()
         # Temperature schedule: explore more early in the game and early in training.
         temperature = args.temperature
@@ -173,9 +222,23 @@ def train(args: argparse.Namespace) -> None:
         status = "warmup" if warmup else "train"
         policy_str = "n/a" if warmup else f"{avg_policy:.4f}"
         value_str = "n/a" if warmup else f"{avg_value:.4f}"
+
+        ep_sec = time.perf_counter() - ep_t0
+        completed_in_this_run = (episode - start_episode) + 1
+        if completed_in_this_run == 1:
+            avg_ep_sec = ep_sec
+        else:
+            # Running average without storing all times.
+            prev = getattr(train, "_avg_ep_sec", ep_sec)
+            avg_ep_sec = prev + (ep_sec - prev) / float(completed_in_this_run)
+        train._avg_ep_sec = avg_ep_sec  # type: ignore[attr-defined]
+
+        est_1000_sec = avg_ep_sec * 1000.0
+        est_1000_hr = est_1000_sec / 3600.0
         print(
             f"Episode {episode}: status={status}, moves={len(episode_samples)}, games={int(args.games_per_episode)}, sims={args.simulations}, temp={temperature:.3f}, "
-            f"policy_loss={policy_str}, value_loss={value_str}, replay={len(replay)}/{args.min_replay}"
+            f"policy_loss={policy_str}, value_loss={value_str}, replay={len(replay)}/{args.min_replay}, "
+            f"episode_sec={ep_sec:.2f}, avg_ep_sec={avg_ep_sec:.2f}, est_1000_ep_hr={est_1000_hr:.2f}"
         )
 
         if episode % args.save_every == 0:
@@ -186,9 +249,25 @@ def train(args: argparse.Namespace) -> None:
                 training_state={"episode": int(episode)},
             )
             print(f"Saved model to {args.model_path}")
+            if replay_path:
+                try:
+                    save_replay_buffer(replay, replay_path)
+                    print(f"Saved replay buffer: {len(replay)} samples to {replay_path}")
+                except Exception as e:
+                    print(f"Warning: failed to save replay buffer ({type(e).__name__}: {e})")
             if args.coreml_path:
-                export_coreml(str(args.model_path), str(args.coreml_path))
-                print(f"Exported CoreML model to {args.coreml_path}")
+                try:
+                    export_coreml(str(args.model_path), str(args.coreml_path))
+                    print(f"Exported CoreML model to {args.coreml_path}")
+                except Exception as e:
+                    print(
+                        "CoreML export failed (training still succeeded). "
+                        f"Error: {type(e).__name__}: {e}"
+                    )
+                    print(
+                        "Hint: CoreML export depends on coremltools compatibility with your Python and PyTorch versions. "
+                        "If you need CoreML, try Python 3.11/3.12 and a coremltools-supported PyTorch version (often <= 2.7)."
+                    )
 
     # final save
     save_checkpoint(
@@ -198,9 +277,25 @@ def train(args: argparse.Namespace) -> None:
         training_state={"episode": int(args.episodes)},
     )
     print(f"Training finished. Model saved to {args.model_path}")
+    if replay_path:
+        try:
+            save_replay_buffer(replay, replay_path)
+            print(f"Saved replay buffer: {len(replay)} samples to {replay_path}")
+        except Exception as e:
+            print(f"Warning: failed to save replay buffer ({type(e).__name__}: {e})")
     if args.coreml_path:
-        export_coreml(str(args.model_path), str(args.coreml_path))
-        print(f"CoreML model saved to {args.coreml_path}")
+        try:
+            export_coreml(str(args.model_path), str(args.coreml_path))
+            print(f"CoreML model saved to {args.coreml_path}")
+        except Exception as e:
+            print(
+                "CoreML export failed (training still succeeded). "
+                f"Error: {type(e).__name__}: {e}"
+            )
+            print(
+                "Hint: CoreML export depends on coremltools compatibility with your Python and PyTorch versions. "
+                "If you need CoreML, try Python 3.11/3.12 and a coremltools-supported PyTorch version (often <= 2.7)."
+            )
 
 
 def parse_args() -> argparse.Namespace:
@@ -214,6 +309,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--replay-size", type=int, default=50000)
     parser.add_argument("--min-replay", type=int, default=5000)
+    parser.add_argument(
+        "--replay-path",
+        type=str,
+        default="",
+        help="Path to save/load replay buffer (default: <model-path>.replay.npz). Use empty to use default.",
+    )
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--temperature-decay", type=float, default=0.995)
     parser.add_argument("--min-temperature", type=float, default=0.1)
@@ -238,6 +339,10 @@ if __name__ == "__main__":
 
     args.model_path = Path(args.model_path)
     args.model_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.replay_path:
+        args.replay_path = Path(args.replay_path)
+    else:
+        args.replay_path = None
     if args.coreml_path:
         from pathlib import Path
         args.coreml_path = Path(args.coreml_path)

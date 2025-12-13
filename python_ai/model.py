@@ -1,6 +1,8 @@
 """Policy-Value network and utilities (ResNet backbone)."""
 from __future__ import annotations
 
+import importlib.util
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -113,6 +115,22 @@ def load_checkpoint(path: str, map_location: Optional[torch.device] = None) -> P
 
 def export_coreml(model_path: str, coreml_path: str) -> None:
     """Export a trained PyTorch model to CoreML for ANE-friendly inference."""
+    if sys.platform != "darwin":
+        raise RuntimeError("CoreML export is only supported on macOS")
+    if sys.version_info >= (3, 13):
+        raise RuntimeError(
+            f"CoreML export is not supported on Python {sys.version_info.major}.{sys.version_info.minor}. "
+            "Use Python 3.11/3.12 for coremltools-based export."
+        )
+    if importlib.util.find_spec("coremltools") is None:
+        raise RuntimeError("coremltools is not installed; cannot export CoreML")
+    # Avoid importing coremltools if its native extension isn't present for this Python.
+    if importlib.util.find_spec("coremltools.libcoremlpython") is None:
+        raise RuntimeError(
+            "coremltools native library is missing (coremltools.libcoremlpython). "
+            "This typically means coremltools does not ship wheels for your Python version."
+        )
+
     import coremltools as ct
 
     dummy = torch.zeros(1, 3, BOARD_SIZE, BOARD_SIZE)
