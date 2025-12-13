@@ -43,10 +43,13 @@ python -m python_ai.train --episodes 200 --simulations 64 --augment --model-path
 python -m python_ai.train --episodes 5 --model-path python_ai/checkpoints/policy_value.pt --coreml-path python_ai/checkpoints/policy_value.mlpackage
 ```
 
+Note: CoreML export depends on `coremltools` compatibility with your Python + PyTorch versions. On very new Python/Torch (e.g. Python 3.13+), export will be skipped/fail with a message while training still succeeds; use a separate env with Python 3.11/3.12 and a coremltools-supported PyTorch version (often <= 2.7) to export.
+
 Key flags:
 - `--model-path` choose which model file to save/load
 - `--coreml-path` export a CoreML model for ANE-friendly inference
 - `--resume` continue training from an existing checkpoint
+ - `--replay-path` save/load replay buffer (defaults to `<model-path>.replay.npz`), so `--resume` can keep training data
  - `--simulations` MCTS simulations per move (quality vs speed)
  - `--augment` enable 8-way board symmetry augmentation
 
