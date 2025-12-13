@@ -8,7 +8,7 @@ A traditional Gomoku (Five in a Row) game built with TypeScript and Node.js.
 - Simple and modern UI
 - AI interface for future AI implementation and training
 
-## Setup
+# Setup
 
 ```bash
 # Install dependencies
@@ -25,6 +25,43 @@ npm run dev
 ```
 
 Then open http://localhost:3000 in your browser.
+
+## Python AI (self-play training + CoreML export)
+
+
+```bash
+# Create venv and install python deps
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r python_ai/requirements.txt
+
+# Train with self-play (PyTorch, uses MPS if available)
+# Uses AlphaZero-style self-play with MCTS visit targets.
+python -m python_ai.train --episodes 200 --simulations 64 --augment --model-path python_ai/checkpoints/policy_value.pt
+
+# Optional: export to CoreML for Apple Neural Engine
+python -m python_ai.train --episodes 5 --model-path python_ai/checkpoints/policy_value.pt --coreml-path python_ai/checkpoints/policy_value.mlpackage
+```
+
+Key flags:
+- `--model-path` choose which model file to save/load
+- `--coreml-path` export a CoreML model for ANE-friendly inference
+- `--resume` continue training from an existing checkpoint
+ - `--simulations` MCTS simulations per move (quality vs speed)
+ - `--augment` enable 8-way board symmetry augmentation
+
+Training logs print per-episode policy/value loss and replay size.
+
+## Play with the Python AI + UI
+
+```bash
+source .venv/bin/activate
+python -m python_ai.player --model-path python_ai/checkpoints/policy_value.pt --mcts-sims 64 --open
+# Or use CoreML backend (requires exported .mlpackage)
+python -m python_ai.player --coreml --model-path python_ai/checkpoints/policy_value.mlpackage --open
+```
+
+This serves the existing UI (default http://127.0.0.1:8000). In the UI, enable "Play against AI"; keep "Use remote AI service" checked to use the Python backend. Uncheck to fall back to the browser heuristic.
 
 ## Project Structure
 
