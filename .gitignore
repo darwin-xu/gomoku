@@ -30,3 +30,10 @@ yarn-error.log*
 
 # TypeScript
 *.tsbuildinfo
+
+# Python / ML
+.venv/
+__pycache__/
+*.pt
+*.mlpackage
+python_ai/checkpoints/

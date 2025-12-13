@@ -9,6 +9,7 @@ let game = null;
 let canvas = null;
 let ctx = null;
 let aiEnabled = false;
+let useRemoteAI = true;
 
 // Player colors
 const PlayerColor = {
@@ -23,6 +24,36 @@ const GameState = {
     WHITE_WIN: 'WHITE_WIN',
     DRAW: 'DRAW'
 };
+
+// Map board to numeric for backend (BLACK=1, WHITE=-1, EMPTY=0)
+function encodeBoard(board) {
+    return board.map(row => row.map(cell => {
+        if (cell === PlayerColor.BLACK) return 1;
+        if (cell === PlayerColor.WHITE) return -1;
+        return 0;
+    }));
+}
+
+async function requestRemoteAIMove() {
+    try {
+        const response = await fetch('/api/ai-move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                board: encodeBoard(game.board),
+                currentPlayer: game.currentPlayer
+            })
+        });
+        if (!response.ok) {
+            throw new Error('AI service error');
+        }
+        const data = await response.json();
+        return { row: data.row, col: data.col };
+    } catch (err) {
+        console.warn('Remote AI failed, falling back to local heuristic', err);
+        return null;
+    }
+}
 
 // Initialize the game
 function initGame() {
@@ -44,6 +75,9 @@ function initGame() {
     document.getElementById('aiMoveBtn').addEventListener('click', makeAIMove);
     document.getElementById('aiToggle').addEventListener('change', (e) => {
         aiEnabled = e.target.checked;
+    });
+    document.getElementById('remoteAIToggle')?.addEventListener('change', (e) => {
+        useRemoteAI = e.target.checked;
     });
 
     // Draw initial board
@@ -293,15 +327,30 @@ function undoMove() {
 }
 
 // Simple AI move (random available position near center)
-function makeAIMove() {
+async function makeAIMove() {
     if (game.gameState !== GameState.IN_PROGRESS) {
         return;
     }
 
+    let move = null;
+    if (useRemoteAI) {
+        move = await requestRemoteAIMove();
+    }
+
+    if (!move) {
+        move = pickLocalHeuristicMove();
+    }
+
+    if (move) {
+        makeMove(move.row, move.col);
+    }
+}
+
+// Local fallback heuristic: center-biased random
+function pickLocalHeuristicMove() {
     const availableMoves = [];
     const center = Math.floor(BOARD_SIZE / 2);
 
-    // Find available positions, prefer center
     for (let row = 0; row < BOARD_SIZE; row++) {
         for (let col = 0; col < BOARD_SIZE; col++) {
             if (game.board[row][col] === PlayerColor.EMPTY) {
@@ -312,15 +361,12 @@ function makeAIMove() {
     }
 
     if (availableMoves.length === 0) {
-        return;
+        return null;
     }
 
-    // Sort by priority and add some randomness
     availableMoves.sort((a, b) => b.priority - a.priority);
     const topMoves = availableMoves.slice(0, Math.min(5, availableMoves.length));
-    const move = topMoves[Math.floor(Math.random() * topMoves.length)];
-
-    makeMove(move.row, move.col);
+    return topMoves[Math.floor(Math.random() * topMoves.length)];
 }
 
 // Initialize when page loads
