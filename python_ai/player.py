@@ -25,6 +25,39 @@ from python_ai.mcts import MCTS
 from python_ai.model import PolicyValueNet, get_device, load_checkpoint
 
 
+def _check_five(board: np.ndarray, row: int, col: int, player: int) -> bool:
+    # board is (15, 15) int8
+    directions = ((1, 0), (0, 1), (1, 1), (1, -1))
+    for dr, dc in directions:
+        count = 1
+        r, c = row + dr, col + dc
+        while 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE and board[r, c] == player:
+            count += 1
+            r += dr
+            c += dc
+        r, c = row - dr, col - dc
+        while 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE and board[r, c] == player:
+            count += 1
+            r -= dr
+            c -= dc
+        if count >= 5:
+            return True
+    return False
+
+
+def _find_immediate_win(board: np.ndarray, player: int) -> Tuple[int, int] | None:
+    empties = np.argwhere(board == 0)
+    for (r, c) in empties:
+        r_i = int(r)
+        c_i = int(c)
+        board[r_i, c_i] = player
+        won = _check_five(board, r_i, c_i, player)
+        board[r_i, c_i] = 0
+        if won:
+            return r_i, c_i
+    return None
+
+
 class TorchAIAgent:
     def __init__(self, model_path: Path, mcts_simulations: int = 0, c_puct: float = 1.5):
         device_cfg = get_device()
@@ -34,9 +67,29 @@ class TorchAIAgent:
         self.model.eval()
         self.mcts_simulations = int(mcts_simulations)
         self.c_puct = float(c_puct)
-        self.mcts = MCTS(model=self.model, device=self.device, c_puct=self.c_puct) if self.mcts_simulations > 0 else None
+        # Important: Dirichlet noise is for self-play exploration, not for inference.
+        self.mcts = (
+            MCTS(
+                model=self.model,
+                device=self.device,
+                c_puct=self.c_puct,
+                dirichlet_alpha=0.3,
+                dirichlet_frac=0.0,
+            )
+            if self.mcts_simulations > 0
+            else None
+        )
 
     def predict(self, board: np.ndarray, current_player: int) -> Tuple[int, int]:
+        # Tactical guardrails: take immediate win, or block opponent's immediate win.
+        # This is cheap and prevents very weak-looking blunders.
+        win_move = _find_immediate_win(board, current_player)
+        if win_move is not None:
+            return win_move
+        block_move = _find_immediate_win(board, -current_player)
+        if block_move is not None:
+            return block_move
+
         if self.mcts is not None:
             env = GomokuEnv()
             env.board = board.astype(np.int8).copy()
