@@ -173,12 +173,24 @@ function handleBoardClick(event) {
     }
 
     const rect = canvas.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
+    // Convert from CSS pixels (client coords) to canvas pixels.
+    // This matters because the canvas is responsive (max-width: 100%; height: auto).
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (event.clientX - rect.left) * scaleX;
+    const y = (event.clientY - rect.top) * scaleY;
+
+    const colF = (x - BOARD_PADDING) / CELL_SIZE;
+    const rowF = (y - BOARD_PADDING) / CELL_SIZE;
+
+    // Ignore clicks clearly outside the playable board area.
+    if (colF < -0.5 || colF > (BOARD_SIZE - 1) + 0.5 || rowF < -0.5 || rowF > (BOARD_SIZE - 1) + 0.5) {
+        return;
+    }
 
     // Convert to board coordinates
-    const col = Math.round((x - BOARD_PADDING) / CELL_SIZE);
-    const row = Math.round((y - BOARD_PADDING) / CELL_SIZE);
+    const col = Math.max(0, Math.min(BOARD_SIZE - 1, Math.round(colF)));
+    const row = Math.max(0, Math.min(BOARD_SIZE - 1, Math.round(rowF)));
 
     // Make the move
     if (makeMove(row, col)) {

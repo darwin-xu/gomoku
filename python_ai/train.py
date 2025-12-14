@@ -24,6 +24,7 @@ from tqdm import tqdm
 from python_ai.gomoku_env import BOARD_SIZE
 from python_ai.model import PolicyValueNet, get_device, save_checkpoint, load_checkpoint, export_coreml
 from python_ai.self_play import Sample, apply_symmetry, play_self_game_mcts
+from python_ai.telemetry import make_telemetry
 
 
 def _default_replay_path(model_path: Path) -> Path:
@@ -108,6 +109,17 @@ def train(args: argparse.Namespace) -> None:
     device_cfg = get_device()
     device = device_cfg.device
     print(f"Using device: {device} (MPS={device_cfg.use_mps})")
+
+    telemetry = make_telemetry(
+        enabled=bool(args.telemetry),
+        host=str(args.telemetry_host),
+        port=int(args.telemetry_port),
+        path=Path(args.telemetry_path),
+        keep_points=int(args.telemetry_keep),
+    )
+    if args.telemetry:
+        telemetry.start_server()
+        print(f"Telemetry dashboard: http://{args.telemetry_host}:{args.telemetry_port}")
 
     # Configure DataLoader workers (0 = main process)
     make_dataloader._num_workers = int(args.dataloader_workers) if args.dataloader_workers else 0  # type: ignore[attr-defined]
@@ -235,6 +247,22 @@ def train(args: argparse.Namespace) -> None:
 
         est_1000_sec = avg_ep_sec * 1000.0
         est_1000_hr = est_1000_sec / 3600.0
+
+        telemetry.log({
+            "episode": int(episode),
+            "status": status,
+            "moves": int(len(episode_samples)),
+            "games": int(args.games_per_episode),
+            "simulations": int(args.simulations),
+            "temperature": float(temperature),
+            "policy_loss": None if warmup else float(avg_policy),
+            "value_loss": None if warmup else float(avg_value),
+            "replay_size": int(len(replay)),
+            "min_replay": int(args.min_replay),
+            "episode_sec": float(ep_sec),
+            "avg_ep_sec": float(avg_ep_sec),
+            "est_1000_ep_hr": float(est_1000_hr),
+        })
         print(
             f"Episode {episode}: status={status}, moves={len(episode_samples)}, games={int(args.games_per_episode)}, sims={args.simulations}, temp={temperature:.3f}, "
             f"policy_loss={policy_str}, value_loss={value_str}, replay={len(replay)}/{args.min_replay}, "
@@ -330,6 +358,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--channels", type=int, default=128)
     parser.add_argument("--blocks", type=int, default=8)
     parser.add_argument("--resume", action="store_true")
+
+    # Telemetry dashboard
+    parser.add_argument("--telemetry", action="store_true", help="Start a local telemetry web server during training")
+    parser.add_argument("--telemetry-host", type=str, default="127.0.0.1")
+    parser.add_argument("--telemetry-port", type=int, default=8765)
+    parser.add_argument("--telemetry-path", type=str, default="./python_ai/checkpoints/telemetry.jsonl")
+    parser.add_argument("--telemetry-keep", type=int, default=5000, help="How many points to keep in memory for the dashboard")
     return parser.parse_args()
 
 
