@@ -75,6 +75,34 @@ python -m python_ai.player --coreml --model-path python_ai/checkpoints/policy_va
 
 This serves the existing UI (default http://127.0.0.1:8000). In the UI, enable "Play against AI"; keep "Use remote AI service" checked to use the Python backend. Uncheck to fall back to the browser heuristic.
 
+## Evaluate strength (arena)
+
+Training losses (policy/value) can look great while play is still weak. To measure real strength, compare checkpoints by win-rate:
+
+```bash
+source .venv/bin/activate
+
+# Compare two checkpoints (A vs B), alternating colors
+python -m python_ai.eval \
+    --a python_ai/checkpoints/policy_value.pt \
+    --b python_ai/checkpoints/policy_value_old.pt \
+    --games 200 \
+    --sims 64
+```
+
+Interpreting results:
+- If A is only ~50% vs B, it likely hasn’t improved much.
+- If A is consistently >60% vs B over a few hundred games, it’s meaningfully stronger.
+
+## Inspect a model checkpoint
+
+Print what’s stored inside a `.pt` checkpoint (including the last saved training episode when available):
+
+```bash
+source .venv/bin/activate
+python -m python_ai.inspect --model-path python_ai/checkpoints/overnight.pt
+```
+
 ## Project Structure
 
 - `src/core/` - Core game logic
