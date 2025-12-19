@@ -185,7 +185,7 @@ python -m python_ai.train \
 
 **⚠️ IMPORTANT**: Never change `--channels` or `--blocks` when resuming from a checkpoint!
 
-Changing the network architecture causes an architecture mismatch error when loading the checkpoint. The saved weights won't fit the new model structure. If you need a different network size, start a new training run with a different `--model-path`.
+Changing the network architecture causes a runtime error when loading: the saved weights won't match the new model structure (e.g., "size mismatch" errors in PyTorch's `load_state_dict`). If you need a different network size, start a new training run with a different `--model-path`.
 
 ## Next Steps
 
