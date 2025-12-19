@@ -223,10 +223,21 @@ python -m python_ai.train \
     --augment \
     --model-path python_ai/checkpoints/my_model.pt
 
-# Day 3: Compare with initial checkpoint
+# Day 3: Manually save a backup before further training
+cp python_ai/checkpoints/my_model.pt python_ai/checkpoints/my_model_day2.pt
+
+# Continue training to day 4
+python -m python_ai.train \
+    --resume \
+    --episodes 500 \
+    --simulations 64 \
+    --augment \
+    --model-path python_ai/checkpoints/my_model.pt
+
+# Compare day 4 model with day 2 backup
 python -m python_ai.eval \
     --a python_ai/checkpoints/my_model.pt \
-    --b python_ai/checkpoints/my_model.pt.backup \
+    --b python_ai/checkpoints/my_model_day2.pt \
     --games 200 \
     --sims 64
 
