@@ -25,56 +25,6 @@ from python_ai.mcts import MCTS
 from python_ai.model import PolicyValueNet, get_device, load_checkpoint
 
 
-def _check_k(board: np.ndarray, row: int, col: int, player: int, k: int) -> bool:
-    # board is (15, 15) int8
-    directions = ((1, 0), (0, 1), (1, 1), (1, -1))
-    for dr, dc in directions:
-        count = 1
-        r, c = row + dr, col + dc
-        while 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE and board[r, c] == player:
-            count += 1
-            r += dr
-            c += dc
-        r, c = row - dr, col - dc
-        while 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE and board[r, c] == player:
-            count += 1
-            r -= dr
-            c -= dc
-        if count >= k:
-            return True
-    return False
-
-
-def _find_immediate_win(board: np.ndarray, player: int) -> Tuple[int, int] | None:
-    empties = np.argwhere(board == 0)
-    for (r, c) in empties:
-        r_i = int(r)
-        c_i = int(c)
-        board[r_i, c_i] = player
-        won = _check_k(board, r_i, c_i, player, 5)
-        board[r_i, c_i] = 0
-        if won:
-            return r_i, c_i
-    return None
-
-
-def _find_immediate_k(board: np.ndarray, player: int, k: int) -> Tuple[int, int] | None:
-    """Find a move that creates a line of length >= k for player.
-
-    This is a lightweight tactical heuristic used at inference time.
-    """
-    empties = np.argwhere(board == 0)
-    for (r, c) in empties:
-        r_i = int(r)
-        c_i = int(c)
-        board[r_i, c_i] = player
-        ok = _check_k(board, r_i, c_i, player, k)
-        board[r_i, c_i] = 0
-        if ok:
-            return r_i, c_i
-    return None
-
-
 class TorchAIAgent:
     def __init__(self, model_path: Path, mcts_simulations: int = 0, c_puct: float = 1.5):
         device_cfg = get_device()
@@ -98,25 +48,6 @@ class TorchAIAgent:
         )
 
     def predict(self, board: np.ndarray, current_player: int) -> Tuple[int, int]:
-        # Tactical guardrails: take immediate win, or block opponent's immediate win.
-        # This is cheap and prevents very weak-looking blunders.
-        win_move = _find_immediate_win(board, current_player)
-        if win_move is not None:
-            return win_move
-        block_move = _find_immediate_win(board, -current_player)
-        if block_move is not None:
-            return block_move
-
-        # Next: create or block 4-in-a-row threats.
-        # This directly addresses the common "can't see obvious 3-in-a-row" complaint:
-        # if the opponent has an open three, they can often create a four next move.
-        make_four = _find_immediate_k(board, current_player, 4)
-        if make_four is not None:
-            return make_four
-        block_four = _find_immediate_k(board, -current_player, 4)
-        if block_four is not None:
-            return block_four
-
         if self.mcts is not None:
             env = GomokuEnv()
             env.board = board.astype(np.int8).copy()
