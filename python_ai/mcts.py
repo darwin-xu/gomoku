@@ -63,7 +63,7 @@ class MCTS:
         logits, value = self._predict(env)
 
         mask = np.zeros(BOARD_SIZE * BOARD_SIZE, dtype=bool)
-        for (r, c) in env.valid_moves():
+        for (r, c) in env.valid_moves_heuristic():
             mask[r * BOARD_SIZE + c] = True
 
         priors = self._masked_softmax(logits, mask)
@@ -93,7 +93,7 @@ class MCTS:
         if not node.children:
             logits, value = self._predict(env)
             mask = np.zeros(BOARD_SIZE * BOARD_SIZE, dtype=bool)
-            for (r, c) in env.valid_moves():
+            for (r, c) in env.valid_moves_heuristic():
                 mask[r * BOARD_SIZE + c] = True
             priors = self._masked_softmax(logits, mask)
             for a in range(BOARD_SIZE * BOARD_SIZE):

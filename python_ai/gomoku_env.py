@@ -41,6 +41,30 @@ class GomokuEnv:
         rows, cols = np.where(self.board == 0)
         return list(zip(rows.tolist(), cols.tolist()))
 
+    def valid_moves_heuristic(self, distance: int = 2) -> List[Tuple[int, int]]:
+        """Return valid moves that are within 'distance' of any existing stone."""
+        occupied = self.board != 0
+        if not np.any(occupied):
+            return self.valid_moves()
+
+        rows, cols = np.where(occupied)
+        
+        mask = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=bool)
+        
+        # Vectorized bounding box calculation
+        r_min = np.maximum(0, rows - distance)
+        r_max = np.minimum(BOARD_SIZE, rows + distance + 1)
+        c_min = np.maximum(0, cols - distance)
+        c_max = np.minimum(BOARD_SIZE, cols + distance + 1)
+        
+        for i in range(len(rows)):
+            mask[r_min[i]:r_max[i], c_min[i]:c_max[i]] = True
+            
+        mask[occupied] = False
+        
+        valid_rows, valid_cols = np.where(mask)
+        return list(zip(valid_rows.tolist(), valid_cols.tolist()))
+
     def is_full(self) -> bool:
         return not (self.board == 0).any()
 
