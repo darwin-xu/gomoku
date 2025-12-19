@@ -43,6 +43,7 @@ def play_self_game_mcts(
     c_puct: float,
     dirichlet_alpha: float,
     dirichlet_frac: float,
+    restrict_move_distance: int | None = 2,
 ) -> List[Sample]:
     env = GomokuEnv()
     mcts = MCTS(
@@ -51,6 +52,7 @@ def play_self_game_mcts(
         c_puct=c_puct,
         dirichlet_alpha=dirichlet_alpha,
         dirichlet_frac=dirichlet_frac,
+        restrict_move_distance=restrict_move_distance,
     )
 
     samples: List[Sample] = []

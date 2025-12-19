@@ -34,12 +34,19 @@ class MCTS:
         c_puct: float = 1.5,
         dirichlet_alpha: float = 0.3,
         dirichlet_frac: float = 0.25,
+        restrict_move_distance: int | None = None,
     ) -> None:
         self.model = model
         self.device = device
         self.c_puct = c_puct
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_frac = dirichlet_frac
+        self.restrict_move_distance = restrict_move_distance
+
+    def _iter_valid_moves(self, env: GomokuEnv):
+        if self.restrict_move_distance is None:
+            return env.valid_moves()
+        return env.valid_moves_heuristic(distance=self.restrict_move_distance)
 
     def run(self, env: GomokuEnv, simulations: int, temperature: float) -> Tuple[int, np.ndarray]:
         root = self._expand_root(env)
@@ -63,7 +70,7 @@ class MCTS:
         logits, value = self._predict(env)
 
         mask = np.zeros(BOARD_SIZE * BOARD_SIZE, dtype=bool)
-        for (r, c) in env.valid_moves_heuristic():
+        for (r, c) in self._iter_valid_moves(env):
             mask[r * BOARD_SIZE + c] = True
 
         priors = self._masked_softmax(logits, mask)
@@ -93,7 +100,7 @@ class MCTS:
         if not node.children:
             logits, value = self._predict(env)
             mask = np.zeros(BOARD_SIZE * BOARD_SIZE, dtype=bool)
-            for (r, c) in env.valid_moves_heuristic():
+            for (r, c) in self._iter_valid_moves(env):
                 mask[r * BOARD_SIZE + c] = True
             priors = self._masked_softmax(logits, mask)
             for a in range(BOARD_SIZE * BOARD_SIZE):
