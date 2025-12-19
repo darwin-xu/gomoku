@@ -25,7 +25,7 @@ pip install -r python_ai/requirements.txt
 
 ## Training Your First Model
 
-### Option 1: Quick Training (5-10 minutes)
+### Option 1: Quick Training (7-10 minutes)
 Train a basic model with minimal simulations for quick results:
 
 ```bash
@@ -183,7 +183,9 @@ python -m python_ai.train \
     --model-path python_ai/checkpoints/large_model.pt
 ```
 
-**Warning**: Don't change channels/blocks when resuming!
+**⚠️ IMPORTANT**: Never change `--channels` or `--blocks` when resuming from a checkpoint!
+
+Changing the network architecture causes an architecture mismatch error when loading the checkpoint. The saved weights won't fit the new model structure. If you need a different network size, start a new training run with a different `--model-path`.
 
 ## Next Steps
 

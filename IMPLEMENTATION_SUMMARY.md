@@ -251,7 +251,7 @@ Potential improvements not currently implemented:
 **Solution**: Install dependencies: `pip install -r python_ai/requirements.txt`
 
 **Issue**: CoreML export fails
-**Solution**: Use Python 3.11/3.12, skip CoreML if not needed
+**Solution**: Use Python 3.11/3.12 (3.13+ not supported as of Dec 2024), skip CoreML if not needed. CoreML is optional and only affects export, not training.
 
 **Issue**: MPS errors on macOS
 **Solution**: Falls back to CPU automatically
