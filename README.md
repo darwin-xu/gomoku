@@ -103,6 +103,21 @@ source .venv/bin/activate
 python -m python_ai.inspect --model-path python_ai/checkpoints/overnight.pt
 ```
 
+## Model dashboard (web)
+
+A lightweight web page to:
+- list all checkpoints under `python_ai/checkpoints` with full `inspect.py` details
+- run cross-comparisons (round-robin arena + Elo-like ranking)
+- start training jobs with configurable options
+- view training telemetry (loss/time) from the job
+
+```bash
+source .venv/bin/activate
+python -m python_ai.dashboard --port 8787
+# then open http://127.0.0.1:8787
+```
+```
+
 ## Project Structure
 
 - `src/core/` - Core game logic
