@@ -145,6 +145,8 @@ Utility for examining saved checkpoints:
 python -m python_ai.inspect --model-path path/to/model.pt
 ```
 
+Note: The argparse uses hyphens in command-line arguments (e.g., `--model-path`), which are standard for CLI tools.
+
 **Verified**: Correctly extracts and displays checkpoint metadata.
 
 ### 8. Player Service ✓
@@ -191,8 +193,9 @@ All core functionality has been manually verified:
 ## Performance Characteristics
 
 ### Training Speed (CPU)
-- ~8-10 seconds per episode (8 MCTS simulations, 1 game)
-- ~2.5 hours estimated for 1000 episodes
+- ~8-10 seconds per episode (4-8 MCTS simulations, 1 game)
+- ~60-80 seconds per episode (64 MCTS simulations, 1 game - default)
+- ~17-22 hours estimated for 1000 episodes (with default 64 simulations)
 - Scales with: simulations, games per episode, network size
 
 ### Memory Usage
@@ -209,12 +212,12 @@ All core functionality has been manually verified:
 ## Best Practices
 
 ### Training Recommendations
-1. Start with small simulations (8-16) for rapid iteration
+1. Use default 64 simulations for balanced quality/speed (or 8-16 for rapid prototyping)
 2. Use `--augment` to leverage symmetries (8x data)
 3. Enable `--telemetry` to monitor progress
 4. Save frequently (`--save-every 25`)
 5. Use `--resume` to continue training
-6. Increase simulations (64-128) after warmup
+6. Increase simulations (128-256) for evaluation/production play
 
 ### Hyperparameter Tuning
 - **High policy loss**: Increase episodes or batch size
@@ -269,8 +272,19 @@ torch>=2.2.0
 numpy>=1.24.0
 tqdm>=4.66.0
 flask>=3.0.0
-coremltools>=6.3  # Optional, for CoreML export
+coremltools>=6.3  # Optional, for CoreML export on macOS only
 ```
+
+**Installation**:
+```bash
+pip install -r python_ai/requirements.txt
+```
+
+**Notes**:
+- `coremltools` is optional and only needed for CoreML export
+- CoreML export works best with Python 3.11/3.12 (not 3.13+)
+- CoreML export only supported on macOS
+- Training works on all platforms without coremltools
 
 ## Conclusion
 
