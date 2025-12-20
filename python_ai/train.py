@@ -110,16 +110,19 @@ def train(args: argparse.Namespace) -> None:
     device = device_cfg.device
     print(f"Using device: {device} (MPS={device_cfg.use_mps})")
 
+    dashboard_url = str(getattr(args, "dashboard_url", "") or "").strip()
+    if not dashboard_url and bool(getattr(args, "telemetry", False)):
+        # Backward compatibility: previously training started its own telemetry server.
+        # Now --telemetry means "report to a dashboard", using host/port if provided.
+        host = str(getattr(args, "telemetry_host", "127.0.0.1") or "127.0.0.1")
+        port = int(getattr(args, "telemetry_port", 8765) or 8765)
+        dashboard_url = f"http://{host}:{port}"
+
     telemetry = make_telemetry(
-        enabled=bool(args.telemetry),
-        host=str(args.telemetry_host),
-        port=int(args.telemetry_port),
-        path=Path(args.telemetry_path),
-        keep_points=int(args.telemetry_keep),
+        enabled=bool(dashboard_url),
+        dashboard_url=dashboard_url if dashboard_url else None,
+        job_id=str(getattr(args, "dashboard_job_id", "") or str(getattr(args, "job_id", "") or "")) or None,
     )
-    if args.telemetry:
-        telemetry.start_server()
-        print(f"Telemetry dashboard: http://{args.telemetry_host}:{args.telemetry_port}")
 
     # Configure DataLoader workers (0 = main process)
     make_dataloader._num_workers = int(args.dataloader_workers) if args.dataloader_workers else 0  # type: ignore[attr-defined]
@@ -359,12 +362,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--blocks", type=int, default=8)
     parser.add_argument("--resume", action="store_true")
 
-    # Telemetry dashboard
-    parser.add_argument("--telemetry", action="store_true", help="Start a local telemetry web server during training")
+    # Telemetry (dashboard hosted)
+    parser.add_argument(
+        "--dashboard-url",
+        type=str,
+        default="",
+        help="If set, POST telemetry to a running dashboard at this base URL (e.g. http://127.0.0.1:8765)",
+    )
+    parser.add_argument(
+        "--dashboard-job-id",
+        type=str,
+        default="",
+        help="Job id used by the dashboard to group telemetry points (usually provided by dashboard).",
+    )
+
+    # Backward compatibility: keep --telemetry flags but they no longer start a server.
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help="(Deprecated) Report telemetry to dashboard at --telemetry-host/--telemetry-port; no server is started.",
+    )
     parser.add_argument("--telemetry-host", type=str, default="127.0.0.1")
     parser.add_argument("--telemetry-port", type=int, default=8765)
-    parser.add_argument("--telemetry-path", type=str, default="./python_ai/checkpoints/telemetry.jsonl")
-    parser.add_argument("--telemetry-keep", type=int, default=5000, help="How many points to keep in memory for the dashboard")
     return parser.parse_args()
 
 
