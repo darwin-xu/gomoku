@@ -367,6 +367,7 @@ function pickLocalHeuristicMove() {
         for (let col = 0; col < BOARD_SIZE; col++) {
             if (game.board[row][col] === PlayerColor.EMPTY) {
                 const distance = Math.abs(row - center) + Math.abs(col - center);
+                // Negative distance so higher score means closer to center.
                 availableMoves.push({ row, col, priority: -distance });
             }
         }
@@ -376,9 +377,15 @@ function pickLocalHeuristicMove() {
         return null;
     }
 
-    availableMoves.sort((a, b) => b.priority - a.priority);
-    const topMoves = availableMoves.slice(0, Math.min(5, availableMoves.length));
-    return topMoves[Math.floor(Math.random() * topMoves.length)];
+    // Sample with center bias but allow randomness even when the top priority is unique.
+    const weights = availableMoves.map(m => 1 / (1 + Math.abs(m.priority))); // 1 / (1 + distance)
+    const total = weights.reduce((sum, w) => sum + w, 0);
+    let r = Math.random() * total;
+    for (let i = 0; i < availableMoves.length; i++) {
+        r -= weights[i];
+        if (r <= 0) return availableMoves[i];
+    }
+    return availableMoves[availableMoves.length - 1];
 }
 
 // Initialize when page loads
