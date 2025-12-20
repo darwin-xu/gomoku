@@ -39,7 +39,7 @@ pip install -r python_ai/requirements.txt
 # Uses AlphaZero-style self-play with MCTS visit targets.
 python -m python_ai.train --episodes 200 --simulations 64 --augment --model-path python_ai/checkpoints/policy_value.pt
 
-# Train with live telemetry (dashboard-hosted)
+# Train with live telemetry (dashboard-hosted, in-memory)
 python -m python_ai.dashboard --port 8787
 # Then in another terminal:
 python -m python_ai.train --episodes 200 --simulations 64 --augment --model-path python_ai/checkpoints/policy_value.pt --dashboard-url http://127.0.0.1:8787 --dashboard-job-id train
@@ -57,7 +57,7 @@ Key flags:
  - `--replay-path` save/load replay buffer (defaults to `<model-path>.replay.npz`), so `--resume` can keep training data
  - `--simulations` MCTS simulations per move (quality vs speed)
  - `--augment` enable 8-way board symmetry augmentation
- - `--dashboard-url/--dashboard-job-id` (optional) report telemetry to a running dashboard
+ - `--dashboard-url/--dashboard-job-id` (optional) report telemetry in-memory to a running dashboard
  - `--telemetry` (deprecated) report telemetry to `--telemetry-host/--telemetry-port` (no server is started)
 
 Stopping/continuing with different parameters:
@@ -111,7 +111,7 @@ A lightweight web page to:
 - list all checkpoints under `python_ai/checkpoints` with full `inspect.py` details
 - run cross-comparisons (round-robin arena + Elo-like ranking)
 - start training jobs with configurable options
-- view training telemetry (loss/time) posted by each job
+- view training telemetry (loss/time) posted by each job (in-memory; select from running trainings)
 
 ```bash
 source .venv/bin/activate

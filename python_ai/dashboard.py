@@ -34,9 +34,6 @@ from python_ai.inspect import inspect_checkpoint
 
 ROOT = Path(__file__).resolve().parent.parent
 CHECKPOINT_DIR = (ROOT / "python_ai" / "checkpoints").resolve()
-DEFAULT_TELEMETRY_PATH = (CHECKPOINT_DIR / "telemetry.jsonl").resolve()  # legacy fallback
-
-
 def _now() -> float:
     return time.time()
 
@@ -46,37 +43,6 @@ def _safe_relpath(p: Path) -> str:
         return str(p.resolve().relative_to(ROOT))
     except Exception:
         return str(p)
-
-
-def _tail_jsonl(path: Path, *, limit: int = 400) -> List[Dict[str, Any]]:
-    if not path.exists():
-        return []
-
-    # Efficient tail: read from the end in chunks.
-    # For telemetry sizes here, a simple approach is sufficient.
-    points: List[Dict[str, Any]] = []
-    try:
-        with path.open("rb") as f:
-            f.seek(0, os.SEEK_END)
-            end = f.tell()
-            block = 8192
-            data = b""
-            pos = end
-            while pos > 0 and data.count(b"\n") <= limit + 10:
-                read = min(block, pos)
-                pos -= read
-                f.seek(pos)
-                data = f.read(read) + data
-            lines = data.splitlines()[-limit:]
-        for line in lines:
-            try:
-                points.append(json.loads(line.decode("utf-8")))
-            except Exception:
-                continue
-    except Exception:
-        return []
-
-    return points
 
 
 _DASHBOARD_HTML = """<!doctype html>
@@ -225,7 +191,13 @@ _DASHBOARD_HTML = """<!doctype html>
           <button id="teleRefresh" style="margin-left:10px">Refresh</button>
         </div>
       </div>
-      <div class="small" style="margin-top:6px;">Shows telemetry posted by the selected training job (or legacy telemetry.jsonl).</div>
+      <div class="small" style="margin-top:6px;">Shows in-memory telemetry posted by the selected training job.</div>
+      <div class="row" style="margin-top:8px; align-items:center; gap:8px;">
+        <label class="small">Training job
+          <select id="teleJobSelect" style="min-width:180px;"></select>
+        </label>
+        <span class="small" id="teleJobHint"></span>
+      </div>
       <div class="row" style="margin-top:10px;">
         <div class="card" style="min-width:240px;">
           <div><strong>Status</strong>: <span id="teleStatus">-</span></div>
@@ -250,6 +222,7 @@ const modelInspectEl = document.getElementById('modelInspect');
 
 let models = [];
 let selectedJobId = null;
+let runningTrainJobs = [];
 
 function fmtInt(n) {
   if (n === null || n === undefined) return '-';
@@ -379,6 +352,7 @@ async function startTrain() {
 
 async function refreshJobs() {
   const data = await apiGet('/api/jobs');
+  runningTrainJobs = data.jobs.filter(j => j.type === 'train' && j.status === 'running');
   jobsTableBody.innerHTML = '';
   for (const j of data.jobs) {
     const tr = document.createElement('tr');
@@ -413,6 +387,33 @@ async function refreshJobs() {
     jobsTableBody.appendChild(tr);
   }
   if (selectedJobId) await refreshLog();
+
+  // Populate telemetry job selector with running training jobs
+  const teleSel = document.getElementById('teleJobSelect');
+  const prevSel = teleSel.value;
+  teleSel.innerHTML = '';
+  for (const j of runningTrainJobs) {
+    const opt = document.createElement('option');
+    opt.value = j.id;
+    opt.textContent = `${j.id} (${j.status})`;
+    teleSel.appendChild(opt);
+  }
+  if (runningTrainJobs.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No running training jobs';
+    teleSel.appendChild(opt);
+  }
+  // Choose previously selected if still present; else first running train job; else keep current selectedJobId
+  if (runningTrainJobs.some(j => j.id === prevSel)) {
+    teleSel.value = prevSel;
+  } else if (runningTrainJobs.length > 0) {
+    teleSel.value = runningTrainJobs[0].id;
+    selectedJobId = runningTrainJobs[0].id;
+  } else {
+    teleSel.value = '';
+  }
+  document.getElementById('teleJobHint').textContent = teleSel.value ? '' : 'Start a training job to see telemetry.';
 
   // Eval status pill
   const evalJob = data.jobs.find(j => j.id === selectedJobId && j.type === 'eval');
@@ -521,7 +522,8 @@ function parseFloatOrNaN(v) {
 }
 
 async function refreshTelemetry() {
-  const jobQuery = selectedJobId ? `&job_id=${encodeURIComponent(selectedJobId)}` : '';
+  const jobId = document.getElementById('teleJobSelect').value || selectedJobId;
+  const jobQuery = jobId ? `&job_id=${encodeURIComponent(jobId)}` : '';
   const data = await apiGet(`/api/telemetry?limit=400${jobQuery}`);
   const points = data.points || [];
   if (points.length) {
@@ -553,6 +555,10 @@ document.getElementById('startTrain').addEventListener('click', startTrain);
 document.getElementById('teleRefresh').addEventListener('click', refreshTelemetry);
 document.getElementById('teleAuto').addEventListener('change', scheduleTelemetry);
 document.getElementById('teleInterval').addEventListener('change', scheduleTelemetry);
+document.getElementById('teleJobSelect').addEventListener('change', () => {
+  selectedJobId = document.getElementById('teleJobSelect').value || selectedJobId;
+  refreshTelemetry();
+});
 
 refreshModels();
 refreshJobs().then(() => refreshTelemetry().then(scheduleTelemetry));
@@ -571,7 +577,6 @@ class Job:
     started_at: float
     updated_at: float
     log_path: Path
-    telemetry_path: Optional[Path] = None  # legacy / optional persistence
     pid: Optional[int] = None
     result: Optional[Dict[str, Any]] = None
 
@@ -595,206 +600,204 @@ class TelemetryStore:
 
 
 class JobManager:
-  def __init__(self, root: Path, *, dashboard_base_url: str, telemetry: TelemetryStore) -> None:
-    self._root = root
-    self._dashboard_base_url = str(dashboard_base_url).rstrip("/")
-    self._telemetry = telemetry
-    self._lock = threading.Lock()
-    self._jobs: Dict[str, Job] = {}
+    def __init__(self, root: Path, *, dashboard_base_url: str, telemetry: TelemetryStore) -> None:
+        self._root = root
+        self._dashboard_base_url = str(dashboard_base_url).rstrip("/")
+        self._telemetry = telemetry
+        self._lock = threading.Lock()
+        self._jobs: Dict[str, Job] = {}
 
-  def _new_id(self, prefix: str) -> str:
-    return f"{prefix}-{int(_now()*1000)}-{random.randint(1000, 9999)}"
+    def _new_id(self, prefix: str) -> str:
+        return f"{prefix}-{int(_now()*1000)}-{random.randint(1000, 9999)}"
 
-  def list(self) -> List[Dict[str, Any]]:
-    with self._lock:
-      jobs = list(self._jobs.values())
-    return [
-      {
-        "id": j.id,
-        "type": j.type,
-        "status": j.status,
-        "started_at": j.started_at,
-        "updated_at": j.updated_at,
-        "log_path": _safe_relpath(j.log_path),
-        "telemetry_path": _safe_relpath(j.telemetry_path) if j.telemetry_path else None,
-        "pid": j.pid,
-        "result": j.result,
-      }
-      for j in sorted(jobs, key=lambda x: x.started_at, reverse=True)
-    ]
-
-  def get(self, job_id: str) -> Optional[Job]:
-    with self._lock:
-      return self._jobs.get(job_id)
-
-  def create_train_job(self, args: Dict[str, Any]) -> Job:
-    job_id = self._new_id("train")
-    logs_dir = (CHECKPOINT_DIR / "jobs").resolve()
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / f"{job_id}.log"
-
-    cmd = [
-      sys.executable,
-      "-m",
-      "python_ai.train",
-      "--model-path",
-      str(args.get("model_path", "./python_ai/checkpoints/policy_value.pt")),
-      "--episodes",
-      str(int(args.get("episodes", 200))),
-      "--games-per-episode",
-      str(int(args.get("games_per_episode", 1))),
-      "--simulations",
-      str(int(args.get("simulations", 64))),
-      "--batch-size",
-      str(int(args.get("batch_size", 128))),
-      "--batches-per-episode",
-      str(int(args.get("batches_per_episode", 8))),
-      "--lr",
-      str(float(args.get("lr", 1e-3))),
-      "--replay-size",
-      str(int(args.get("replay_size", 50000))),
-      "--min-replay",
-      str(int(args.get("min_replay", 5000))),
-      "--temperature",
-      str(float(args.get("temperature", 1.0))),
-      "--temperature-decay",
-      str(float(args.get("temperature_decay", 0.995))),
-      "--min-temperature",
-      str(float(args.get("min_temperature", 0.1))),
-      "--channels",
-      str(int(args.get("channels", 128))),
-      "--blocks",
-      str(int(args.get("blocks", 8))),
-      "--save-every",
-      str(int(args.get("save_every", 25))),
-      "--value-loss-weight",
-      str(float(args.get("value_loss_weight", 1.0))),
-      "--c-puct",
-      str(float(args.get("c_puct", 1.5))),
-      "--dirichlet-alpha",
-      str(float(args.get("dirichlet_alpha", 0.3))),
-      "--dirichlet-frac",
-      str(float(args.get("dirichlet_frac", 0.25))),
-      "--torch-threads",
-      str(int(args.get("torch_threads", 0))),
-      "--dataloader-workers",
-      str(int(args.get("dataloader_workers", 0))),
-      "--dashboard-url",
-      self._dashboard_base_url,
-      "--dashboard-job-id",
-      job_id,
-    ]
-
-    if bool(args.get("resume")):
-      cmd.append("--resume")
-    if bool(args.get("augment")):
-      cmd.append("--augment")
-
-    replay_path = str(args.get("replay_path") or "").strip()
-    if replay_path:
-      cmd.extend(["--replay-path", replay_path])
-
-    coreml_path = str(args.get("coreml_path") or "").strip()
-    if coreml_path:
-      cmd.extend(["--coreml-path", coreml_path])
-
-    job = Job(
-      id=job_id,
-      type="train",
-      status="running",
-      started_at=_now(),
-      updated_at=_now(),
-      log_path=log_path,
-      telemetry_path=None,
-      pid=None,
-    )
-
-    with log_path.open("w", encoding="utf-8") as lf:
-      lf.write("$ " + " ".join(cmd) + "\n\n")
-      lf.flush()
-      proc = subprocess.Popen(
-        cmd,
-        cwd=str(ROOT),
-        stdout=lf,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-      )
-
-    job.pid = int(proc.pid)
-
-    def watcher() -> None:
-      rc = proc.wait()
-      with self._lock:
-        j = self._jobs.get(job_id)
-        if not j:
-          return
-        if j.status == "stopped":
-          j.updated_at = _now()
-          return
-        j.status = "completed" if rc == 0 else "failed"
-        j.updated_at = _now()
-
-    threading.Thread(target=watcher, daemon=True).start()
-
-    with self._lock:
-      self._jobs[job_id] = job
-    return job
-
-  def stop_job(self, job_id: str) -> bool:
-    with self._lock:
-      job = self._jobs.get(job_id)
-    if not job or job.type != "train" or not job.pid:
-      return False
-
-    try:
-      os.kill(job.pid, 15)
-    except Exception:
-      return False
-
-    with self._lock:
-      job.status = "stopped"
-      job.updated_at = _now()
-    return True
-
-  def create_eval_job(self, models: List[str], *, games: int, sims: int, c_puct: float) -> Job:
-    job_id = self._new_id("eval")
-    logs_dir = (CHECKPOINT_DIR / "jobs").resolve()
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / f"{job_id}.log"
-
-    job = Job(
-      id=job_id,
-      type="eval",
-      status="running",
-      started_at=_now(),
-      updated_at=_now(),
-      log_path=log_path,
-    )
-
-    with self._lock:
-      self._jobs[job_id] = job
-
-    def runner() -> None:
-      try:
-        result = run_tournament(models=models, games=games, sims=sims, c_puct=c_puct, log_path=log_path)
+    def list(self) -> List[Dict[str, Any]]:
         with self._lock:
-          j = self._jobs.get(job_id)
-          if j:
-            j.result = result
-            j.status = "completed"
-            j.updated_at = _now()
-      except Exception as e:
-        with log_path.open("a", encoding="utf-8") as lf:
-          lf.write(f"\nERROR: {type(e).__name__}: {e}\n")
-        with self._lock:
-          j = self._jobs.get(job_id)
-          if j:
-            j.status = "failed"
-            j.updated_at = _now()
+            jobs = list(self._jobs.values())
+        return [
+            {
+                "id": j.id,
+                "type": j.type,
+                "status": j.status,
+                "started_at": j.started_at,
+                "updated_at": j.updated_at,
+                "log_path": _safe_relpath(j.log_path),
+                "pid": j.pid,
+                "result": j.result,
+            }
+            for j in sorted(jobs, key=lambda x: x.started_at, reverse=True)
+        ]
 
-    threading.Thread(target=runner, daemon=True).start()
-    return job
+    def get(self, job_id: str) -> Optional[Job]:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def create_train_job(self, args: Dict[str, Any]) -> Job:
+        job_id = self._new_id("train")
+        logs_dir = (CHECKPOINT_DIR / "jobs").resolve()
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / f"{job_id}.log"
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "python_ai.train",
+            "--model-path",
+            str(args.get("model_path", "./python_ai/checkpoints/policy_value.pt")),
+            "--episodes",
+            str(int(args.get("episodes", 200))),
+            "--games-per-episode",
+            str(int(args.get("games_per_episode", 1))),
+            "--simulations",
+            str(int(args.get("simulations", 64))),
+            "--batch-size",
+            str(int(args.get("batch_size", 128))),
+            "--batches-per-episode",
+            str(int(args.get("batches_per_episode", 8))),
+            "--lr",
+            str(float(args.get("lr", 1e-3))),
+            "--replay-size",
+            str(int(args.get("replay_size", 50000))),
+            "--min-replay",
+            str(int(args.get("min_replay", 5000))),
+            "--temperature",
+            str(float(args.get("temperature", 1.0))),
+            "--temperature-decay",
+            str(float(args.get("temperature_decay", 0.995))),
+            "--min-temperature",
+            str(float(args.get("min_temperature", 0.1))),
+            "--channels",
+            str(int(args.get("channels", 128))),
+            "--blocks",
+            str(int(args.get("blocks", 8))),
+            "--save-every",
+            str(int(args.get("save_every", 25))),
+            "--value-loss-weight",
+            str(float(args.get("value_loss_weight", 1.0))),
+            "--c-puct",
+            str(float(args.get("c_puct", 1.5))),
+            "--dirichlet-alpha",
+            str(float(args.get("dirichlet_alpha", 0.3))),
+            "--dirichlet-frac",
+            str(float(args.get("dirichlet_frac", 0.25))),
+            "--torch-threads",
+            str(int(args.get("torch_threads", 0))),
+            "--dataloader-workers",
+            str(int(args.get("dataloader_workers", 0))),
+            "--dashboard-url",
+            self._dashboard_base_url,
+            "--dashboard-job-id",
+            job_id,
+        ]
+
+        if bool(args.get("resume")):
+            cmd.append("--resume")
+        if bool(args.get("augment")):
+            cmd.append("--augment")
+
+        replay_path = str(args.get("replay_path") or "").strip()
+        if replay_path:
+            cmd.extend(["--replay-path", replay_path])
+
+        coreml_path = str(args.get("coreml_path") or "").strip()
+        if coreml_path:
+            cmd.extend(["--coreml-path", coreml_path])
+
+        job = Job(
+            id=job_id,
+            type="train",
+            status="running",
+            started_at=_now(),
+            updated_at=_now(),
+            log_path=log_path,
+            pid=None,
+        )
+
+        with log_path.open("w", encoding="utf-8") as lf:
+            lf.write("$ " + " ".join(cmd) + "\n\n")
+            lf.flush()
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(ROOT),
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+
+        job.pid = int(proc.pid)
+
+        def watcher() -> None:
+            rc = proc.wait()
+            with self._lock:
+                j = self._jobs.get(job_id)
+                if not j:
+                    return
+                if j.status == "stopped":
+                    j.updated_at = _now()
+                    return
+                j.status = "completed" if rc == 0 else "failed"
+                j.updated_at = _now()
+
+        threading.Thread(target=watcher, daemon=True).start()
+
+        with self._lock:
+            self._jobs[job_id] = job
+        return job
+
+    def stop_job(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+        if not job or job.type != "train" or not job.pid:
+            return False
+
+        try:
+            os.kill(job.pid, 15)
+        except Exception:
+            return False
+
+        with self._lock:
+            job.status = "stopped"
+            job.updated_at = _now()
+        return True
+
+    def create_eval_job(self, models: List[str], *, games: int, sims: int, c_puct: float) -> Job:
+        job_id = self._new_id("eval")
+        logs_dir = (CHECKPOINT_DIR / "jobs").resolve()
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / f"{job_id}.log"
+
+        job = Job(
+            id=job_id,
+            type="eval",
+            status="running",
+            started_at=_now(),
+            updated_at=_now(),
+            log_path=log_path,
+        )
+
+        with self._lock:
+            self._jobs[job_id] = job
+
+        def runner() -> None:
+            try:
+                result = run_tournament(models=models, games=games, sims=sims, c_puct=c_puct, log_path=log_path)
+                with self._lock:
+                    j = self._jobs.get(job_id)
+                    if j:
+                        j.result = result
+                        j.status = "completed"
+                        j.updated_at = _now()
+            except Exception as e:
+                with log_path.open("a", encoding="utf-8") as lf:
+                    lf.write(f"\nERROR: {type(e).__name__}: {e}\n")
+                with self._lock:
+                    j = self._jobs.get(job_id)
+                    if j:
+                        j.status = "failed"
+                        j.updated_at = _now()
+
+        threading.Thread(target=runner, daemon=True).start()
+        return job
 
 
 def _elo_expected(r_a: float, r_b: float) -> float:
@@ -934,7 +937,7 @@ def create_app(*, dashboard_host: str, dashboard_port: int) -> Flask:
     def api_train_start() -> Response:
         body = request.get_json(force=True, silent=True) or {}
         job = jobs.create_train_job(body)
-        return jsonify({"job_id": job.id, "telemetry_path": _safe_relpath(job.telemetry_path) if job.telemetry_path else None})
+        return jsonify({"job_id": job.id})
 
     @app.post("/api/telemetry/<job_id>")
     def api_telemetry_ingest(job_id: str) -> Response:
@@ -971,7 +974,6 @@ def create_app(*, dashboard_host: str, dashboard_port: int) -> Flask:
             "started_at": job.started_at,
             "updated_at": job.updated_at,
             "result": job.result,
-            "telemetry_path": _safe_relpath(job.telemetry_path) if job.telemetry_path else None,
         }, "text": text})
 
     @app.post("/api/jobs/<job_id>/stop")
@@ -988,9 +990,7 @@ def create_app(*, dashboard_host: str, dashboard_port: int) -> Flask:
             points = telemetry_store.get(job_id, limit=limit)
             return jsonify({"job_id": job_id, "points": points})
 
-        # Legacy fallback: if no job_id is provided, show tail of old global telemetry.jsonl (if any).
-        points = _tail_jsonl(DEFAULT_TELEMETRY_PATH, limit=limit)
-        return jsonify({"job_id": None, "path": _safe_relpath(DEFAULT_TELEMETRY_PATH), "points": points})
+        return jsonify({"job_id": None, "points": []})
 
     return app
 
