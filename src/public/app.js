@@ -347,6 +347,12 @@ async function makeAIMove() {
     let move = null;
     if (useRemoteAI) {
         move = await requestRemoteAIMove();
+        // Add randomness even with remote AI: for the opening reply, prefer a random center-biased move
+        // so the AI does not always respond with the same coordinates.
+        if (move && game.moveHistory.length <= 1) {
+            const randomMove = pickLocalHeuristicMove();
+            if (randomMove) move = randomMove;
+        }
     }
 
     if (!move) {
