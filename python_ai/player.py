@@ -26,7 +26,7 @@ from python_ai.model import PolicyValueNet, get_device, load_checkpoint
 
 
 class TorchAIAgent:
-    def __init__(self, model_path: Path, mcts_simulations: int = 0, c_puct: float = 1.5):
+    def __init__(self, model_path: Path, mcts_simulations: int = 0, c_puct: float = 1.5, restrict_move_distance: int | None = 2):
         device_cfg = get_device()
         self.device = device_cfg.device
         self.model = load_checkpoint(str(model_path), map_location=self.device)
@@ -42,6 +42,7 @@ class TorchAIAgent:
                 c_puct=self.c_puct,
                 dirichlet_alpha=0.3,
                 dirichlet_frac=0.0,
+                restrict_move_distance=restrict_move_distance,
             )
             if self.mcts_simulations > 0
             else None
@@ -136,6 +137,7 @@ def main() -> None:
     parser.add_argument("--open", action="store_true", help="Open browser automatically")
     parser.add_argument("--mcts-sims", type=int, default=64, help="MCTS simulations per move (PyTorch backend only)")
     parser.add_argument("--c-puct", type=float, default=1.5)
+    parser.add_argument("--restrict-move-distance", type=int, default=2, help="Limit candidate moves to this Manhattan distance from existing stones (match training). Use -1 to disable.")
     args = parser.parse_args()
 
     static_dir = Path(args.static_dir).resolve()
@@ -145,8 +147,15 @@ def main() -> None:
         agent = CoreMLAIAgent(model_path)
         print("Using CoreML backend (will attempt to utilize ANE)")
     else:
-        agent = TorchAIAgent(model_path, mcts_simulations=args.mcts_sims, c_puct=args.c_puct)
-        print(f"Using PyTorch backend (MPS if available), MCTS sims={args.mcts_sims}")
+        restrict = None if int(args.restrict_move_distance) < 0 else int(args.restrict_move_distance)
+        agent = TorchAIAgent(
+            model_path,
+            mcts_simulations=args.mcts_sims,
+            c_puct=args.c_puct,
+            restrict_move_distance=restrict,
+        )
+        msg = f"Using PyTorch backend (MPS if available), MCTS sims={args.mcts_sims}, restrict_moves={restrict if restrict is not None else 'none'}"
+        print(msg)
 
     app = create_app(static_dir, agent)
 
