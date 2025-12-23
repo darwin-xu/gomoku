@@ -223,7 +223,6 @@ const modelInspectEl = document.getElementById('modelInspect');
 let models = [];
 let selectedJobId = null;
 let runningTrainJobs = [];
-let telemetryJobs = [];
 
 function fmtInt(n) {
   if (n === null || n === undefined) return '-';
@@ -351,82 +350,6 @@ async function startTrain() {
   document.getElementById('trainStatus').textContent = 'running';
 }
 
-function updateTelemetrySelector() {
-  const teleSel = document.getElementById('teleJobSelect');
-  const prevSel = teleSel.value || selectedJobId || '';
-  const candidates = [];
-
-  for (const j of runningTrainJobs) {
-    candidates.push({
-      id: j.id,
-      label: `${j.id} (${j.status})`,
-      last_ts: Number(j.updated_at || j.started_at || 0),
-      status: j.status || '',
-      last_episode: null,
-      replay_size: null,
-      min_replay: null,
-      source: 'job',
-    });
-  }
-
-  for (const t of telemetryJobs) {
-    const ts = Number(t.last_ts || 0);
-    const status = (t.status || '').trim();
-    candidates.push({
-      id: t.job_id,
-      label: `${t.job_id} ${status ? `(${status})` : '(telemetry)'}`,
-      last_ts: ts,
-      status,
-      last_episode: t.last_episode ?? null,
-      replay_size: t.replay_size ?? null,
-      min_replay: t.min_replay ?? null,
-      source: 'telemetry',
-    });
-  }
-
-  const dedup = new Map();
-  for (const c of candidates) {
-    if (!c.id) continue;
-    const existing = dedup.get(c.id);
-    if (!existing || (c.last_ts || 0) > (existing.last_ts || 0)) {
-      dedup.set(c.id, c);
-    }
-  }
-
-  const list = Array.from(dedup.values()).sort((a, b) => (b.last_ts || 0) - (a.last_ts || 0));
-  teleSel.innerHTML = '';
-
-  if (list.length === 0) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = 'No telemetry jobs';
-    teleSel.appendChild(opt);
-    selectedJobId = '';
-    document.getElementById('teleJobHint').textContent = 'Start training with --dashboard-url to see telemetry.';
-    return;
-  }
-
-  for (const c of list) {
-    const opt = document.createElement('option');
-    opt.value = c.id;
-    opt.textContent = c.label;
-    teleSel.appendChild(opt);
-  }
-
-  const chosen = list.find(x => x.id === prevSel) || list[0];
-  teleSel.value = chosen.id;
-  selectedJobId = chosen.id;
-
-  const hintParts = [];
-  if (chosen.last_episode !== null && chosen.last_episode !== undefined) {
-    hintParts.push(`Episode ${chosen.last_episode}`);
-  }
-  if (chosen.last_ts) {
-    hintParts.push(`Last update ${new Date(chosen.last_ts * 1000).toLocaleString()}`);
-  }
-  document.getElementById('teleJobHint').textContent = hintParts.join(' • ');
-}
-
 async function refreshJobs() {
   const data = await apiGet('/api/jobs');
   runningTrainJobs = data.jobs.filter(j => j.type === 'train' && j.status === 'running');
@@ -465,14 +388,32 @@ async function refreshJobs() {
   }
   if (selectedJobId) await refreshLog();
 
-  // Populate telemetry selector using in-memory telemetry job list + running jobs
-  try {
-    const teleMeta = await apiGet('/api/telemetry/jobs');
-    telemetryJobs = teleMeta.jobs || [];
-  } catch (e) {
-    telemetryJobs = [];
+  // Populate telemetry job selector with running training jobs
+  const teleSel = document.getElementById('teleJobSelect');
+  const prevSel = teleSel.value;
+  teleSel.innerHTML = '';
+  for (const j of runningTrainJobs) {
+    const opt = document.createElement('option');
+    opt.value = j.id;
+    opt.textContent = `${j.id} (${j.status})`;
+    teleSel.appendChild(opt);
   }
-  updateTelemetrySelector();
+  if (runningTrainJobs.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No running training jobs';
+    teleSel.appendChild(opt);
+  }
+  // Choose previously selected if still present; else first running train job; else keep current selectedJobId
+  if (runningTrainJobs.some(j => j.id === prevSel)) {
+    teleSel.value = prevSel;
+  } else if (runningTrainJobs.length > 0) {
+    teleSel.value = runningTrainJobs[0].id;
+    selectedJobId = runningTrainJobs[0].id;
+  } else {
+    teleSel.value = '';
+  }
+  document.getElementById('teleJobHint').textContent = teleSel.value ? '' : 'Start a training job to see telemetry.';
 
   // Eval status pill
   const evalJob = data.jobs.find(j => j.id === selectedJobId && j.type === 'eval');
@@ -582,15 +523,6 @@ function parseFloatOrNaN(v) {
 
 async function refreshTelemetry() {
   const jobId = document.getElementById('teleJobSelect').value || selectedJobId;
-  if (!jobId) {
-    document.getElementById('teleStatus').textContent = '-';
-    document.getElementById('teleEpisode').textContent = '-';
-    document.getElementById('teleReplay').textContent = '-';
-    document.getElementById('teleUpdated').textContent = '-';
-    drawSeries(lossCanvas, [], { title: 'Loss', labels: ['policy_loss','value_loss'], colors: ['#1f77b4', '#ff7f0e'] });
-    drawSeries(timeCanvas, [], { title: 'Time', labels: ['episode_sec','avg_ep_sec'], colors: ['#2ca02c', '#d62728'] });
-    return;
-  }
   const jobQuery = jobId ? `&job_id=${encodeURIComponent(jobId)}` : '';
   const data = await apiGet(`/api/telemetry?limit=400${jobQuery}`);
   const points = data.points || [];
@@ -625,7 +557,6 @@ document.getElementById('teleAuto').addEventListener('change', scheduleTelemetry
 document.getElementById('teleInterval').addEventListener('change', scheduleTelemetry);
 document.getElementById('teleJobSelect').addEventListener('change', () => {
   selectedJobId = document.getElementById('teleJobSelect').value || selectedJobId;
-  updateTelemetrySelector();
   refreshTelemetry();
 });
 
@@ -655,35 +586,17 @@ class TelemetryStore:
         self._lock = threading.Lock()
         self._keep_points = int(keep_points)
         self._points: Dict[str, Deque[Dict[str, Any]]] = {}
-        self._latest: Dict[str, Dict[str, Any]] = {}
 
     def append(self, job_id: str, point: Dict[str, Any]) -> None:
-        ts = float(point.get("ts", _now()))
-        point = dict(point)
-        point.setdefault("ts", ts)
         with self._lock:
             if job_id not in self._points:
                 self._points[job_id] = deque(maxlen=self._keep_points)
             self._points[job_id].append(point)
-            self._latest[job_id] = {
-                "job_id": job_id,
-                "last_ts": ts,
-                "last_episode": int(point.get("episode")) if point.get("episode") is not None else None,
-                "status": str(point.get("status") or ""),
-                "replay_size": int(point.get("replay_size")) if point.get("replay_size") is not None else None,
-                "min_replay": int(point.get("min_replay")) if point.get("min_replay") is not None else None,
-            }
 
     def get(self, job_id: str, limit: int = 400) -> List[Dict[str, Any]]:
         with self._lock:
             pts = list(self._points.get(job_id, deque()))
         return pts[-int(limit):]
-
-    def jobs(self) -> List[Dict[str, Any]]:
-        with self._lock:
-            jobs = list(self._latest.values())
-        jobs.sort(key=lambda j: j.get("last_ts", 0), reverse=True)
-        return jobs
 
 
 class JobManager:
@@ -1036,10 +949,6 @@ def create_app(*, dashboard_host: str, dashboard_port: int) -> Flask:
         telemetry_store.append(job_id, point)
         return jsonify({"ok": True})
 
-    @app.get("/api/telemetry/jobs")
-    def api_telemetry_jobs() -> Response:
-      return jsonify({"jobs": telemetry_store.jobs()})
-
     @app.get("/api/jobs")
     def api_jobs() -> Response:
         return jsonify({"jobs": jobs.list()})
@@ -1081,7 +990,7 @@ def create_app(*, dashboard_host: str, dashboard_port: int) -> Flask:
             points = telemetry_store.get(job_id, limit=limit)
             return jsonify({"job_id": job_id, "points": points})
 
-        return jsonify({"job_id": None, "points": [], "jobs": telemetry_store.jobs()})
+        return jsonify({"job_id": None, "points": []})
 
     return app
 
