@@ -10,6 +10,8 @@ let canvas = null;
 let ctx = null;
 let aiEnabled = false;
 let useRemoteAI = true;
+let showPolicy = false;
+let lastPolicy = null; // array of length 225 when debug is enabled
 
 // Player colors
 const PlayerColor = {
@@ -41,13 +43,17 @@ async function requestRemoteAIMove() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 board: encodeBoard(game.board),
-                currentPlayer: game.currentPlayer
+                currentPlayer: game.currentPlayer,
+                debugPolicy: showPolicy
             })
         });
         if (!response.ok) {
             throw new Error('AI service error');
         }
         const data = await response.json();
+        if (showPolicy && Array.isArray(data.policy)) {
+            lastPolicy = data.policy;
+        }
         return { row: data.row, col: data.col };
     } catch (err) {
         console.warn('Remote AI failed, falling back to local heuristic', err);
@@ -78,6 +84,10 @@ function initGame() {
     });
     document.getElementById('remoteAIToggle')?.addEventListener('change', (e) => {
         useRemoteAI = e.target.checked;
+    });
+    document.getElementById('policyToggle')?.addEventListener('change', (e) => {
+        showPolicy = e.target.checked;
+        drawBoard();
     });
 
     // Draw initial board
@@ -140,6 +150,10 @@ function drawBoard() {
                 drawStone(row, col, color);
             }
         }
+    }
+
+    if (showPolicy && lastPolicy) {
+        drawPolicyOverlay(lastPolicy);
     }
 }
 
@@ -228,6 +242,10 @@ function makeMove(row, col) {
 
     drawBoard();
     updateUI();
+    if (showPolicy) {
+        // Clear outdated policy overlay until the next AI computation.
+        lastPolicy = null;
+    }
     return true;
 }
 
@@ -319,6 +337,7 @@ function resetGame() {
         gameState: GameState.IN_PROGRESS,
         moveHistory: []
     };
+    lastPolicy = null;
     drawBoard();
     updateUI();
 }
@@ -347,10 +366,18 @@ async function makeAIMove() {
     let move = null;
     if (useRemoteAI) {
         move = await requestRemoteAIMove();
+        // Add randomness for the opening reply when remote AI is on to avoid deterministic answers.
+        if (move && game.moveHistory.length <= 1) {
+            const randomMove = pickLocalHeuristicMove();
+            if (randomMove) move = randomMove;
+        }
     }
 
     if (!move) {
         move = pickLocalHeuristicMove();
+        if (showPolicy) {
+            lastPolicy = null;
+        }
     }
 
     if (move) {
@@ -379,6 +406,26 @@ function pickLocalHeuristicMove() {
     availableMoves.sort((a, b) => b.priority - a.priority);
     const topMoves = availableMoves.slice(0, Math.min(5, availableMoves.length));
     return topMoves[Math.floor(Math.random() * topMoves.length)];
+}
+
+// Draw policy heat overlay. Higher probability -> darker blue disks.
+function drawPolicyOverlay(policy) {
+    const maxP = Math.max(...policy);
+    if (!Number.isFinite(maxP) || maxP <= 0) return;
+    for (let idx = 0; idx < policy.length; idx++) {
+        const p = policy[idx];
+        if (!Number.isFinite(p) || p <= 0) continue;
+        const row = Math.floor(idx / BOARD_SIZE);
+        const col = idx % BOARD_SIZE;
+        const alpha = Math.min(0.75, p / maxP);
+        const x = BOARD_PADDING + col * CELL_SIZE;
+        const y = BOARD_PADDING + row * CELL_SIZE;
+        const r = Math.max(4, Math.min(12, 4 + 20 * (p / maxP)));
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(52, 120, 246, ${alpha.toFixed(3)})`;
+        ctx.arc(x, y, r, 0, 2 * Math.PI);
+        ctx.fill();
+    }
 }
 
 // Initialize when page loads
