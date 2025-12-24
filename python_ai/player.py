@@ -6,7 +6,7 @@ import json
 import threading
 import webbrowser
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 import sys
 
 # Allow running as a script: python python_ai/player.py
@@ -48,15 +48,20 @@ class TorchAIAgent:
             else None
         )
 
-    def predict(self, board: np.ndarray, current_player: int) -> Tuple[int, int]:
+    def predict(self, board: np.ndarray, current_player: int, include_policy: bool = False) -> Tuple[int, int, Optional[list[float]]]:
+        policy_out: Optional[list[float]] = None
+
         if self.mcts is not None:
             env = GomokuEnv()
             env.board = board.astype(np.int8).copy()
             env.current_player = int(current_player)
             env.winner = None
-            action, _ = self.mcts.run(env, simulations=self.mcts_simulations, temperature=1e-3)
+            action, visits = self.mcts.run(env, simulations=self.mcts_simulations, temperature=1e-3)
+            if include_policy:
+                probs = visits / (visits.sum() + 1e-8)
+                policy_out = probs.tolist()
             row, col = divmod(action, BOARD_SIZE)
-            return row, col
+            return row, col, policy_out
 
         state = self._encode(board, current_player).to(self.device)
         with torch.no_grad():
@@ -67,9 +72,13 @@ class TorchAIAgent:
         mask = torch.from_numpy((board.flatten() == 0)).to(self.device)
         logits = logits.masked_fill(~mask, -1e9)
 
+        if include_policy:
+            probs = torch.softmax(logits, dim=-1)
+            policy_out = probs.detach().cpu().tolist()
+
         action = int(torch.argmax(logits).item())
         row, col = divmod(action, BOARD_SIZE)
-        return row, col
+        return row, col, policy_out
 
     @staticmethod
     def _encode(board: np.ndarray, perspective: int) -> torch.Tensor:
@@ -121,8 +130,12 @@ def create_app(static_dir: Path, agent) -> Flask:
         board = np.array(data.get('board', []), dtype=np.int8)
         current_player = data.get('currentPlayer', 'BLACK')
         perspective = 1 if current_player.upper() == 'BLACK' else -1
-        row, col = agent.predict(board, perspective)
-        return jsonify({"row": int(row), "col": int(col)})
+        include_policy = bool(data.get('debugPolicy'))
+        row, col, policy = agent.predict(board, perspective, include_policy=include_policy)
+        resp = {"row": int(row), "col": int(col)}
+        if include_policy and policy is not None:
+            resp["policy"] = policy
+        return jsonify(resp)
 
     return app
 
