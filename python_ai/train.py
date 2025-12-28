@@ -371,60 +371,234 @@ def train(args: argparse.Namespace) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Self-play training for Gomoku")
-    parser.add_argument("--model-path", type=str, default="./python_ai/checkpoints/policy_value.pt")
-    parser.add_argument("--coreml-path", type=str, default="", help="Optional CoreML export path (.mlpackage)")
-    parser.add_argument("--episodes", type=int, default=200)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--batches-per-episode", type=int, default=8)
-    parser.add_argument("--games-per-episode", type=int, default=1, help="How many self-play games to generate per episode")
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--replay-size", type=int, default=50000)
-    parser.add_argument("--min-replay", type=int, default=5000)
-    parser.add_argument(
+    parser = argparse.ArgumentParser(
+        description="AlphaZero-style self-play training for Gomoku (15×15, 5-in-a-row).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Examples:
+  # Basic run with default settings
+  python -m python_ai.train --model-path checkpoints/my_model.pt --episodes 500
+
+  # Stronger, less random self-play
+  python -m python_ai.train --simulations 128 --temperature 0.6 \\
+      --temperature-decay 0.99 --min-temperature 0.2 \\
+      --dirichlet-alpha 0.15 --dirichlet-frac 0.15
+
+  # Large-scale training with dashboard telemetry
+  python -m python_ai.train --episodes 50000 --replay-size 200000 \\
+      --min-replay 10000 --games-per-episode 4 --augment \\
+      --dashboard-url http://127.0.0.1:8787 --dashboard-job-id run1
+""",
+    )
+
+    # ── Model & Checkpointing ────────────────────────────────────────────────
+    ckpt = parser.add_argument_group("Model & Checkpointing")
+    ckpt.add_argument(
+        "--model-path",
+        type=str,
+        default="./python_ai/checkpoints/policy_value.pt",
+        help="Path to save/load neural network weights. If --resume is set and file exists, "
+             "training continues from it; otherwise a fresh network is created.",
+    )
+    ckpt.add_argument(
+        "--resume",
+        action="store_true",
+        help="Load weights, optimizer state, and episode counter from --model-path and continue. "
+             "Without this flag training starts from scratch, overwriting any existing file.",
+    )
+    ckpt.add_argument(
+        "--save-every",
+        type=int,
+        default=25,
+        help="Checkpoint frequency in episodes. Lower = more rollback points but more I/O.",
+    )
+    ckpt.add_argument(
+        "--coreml-path",
+        type=str,
+        default="",
+        help="Optional .mlpackage path. After each save the model is exported to CoreML for "
+             "on-device inference (macOS/iOS). Requires coremltools.",
+    )
+    ckpt.add_argument(
         "--replay-path",
         type=str,
         default="",
-        help="Path to save/load replay buffer (default: <model-path>.replay.npz). Use empty to use default.",
+        help="Sidecar file storing the experience buffer (default: <model-path>.replay.npz). "
+             "Use a custom path to share replay across runs or checkpoint it separately.",
     )
-    parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--temperature-decay", type=float, default=0.995)
-    parser.add_argument("--min-temperature", type=float, default=0.1)
-    parser.add_argument("--save-every", type=int, default=25)
-    parser.add_argument("--value-loss-weight", type=float, default=1.0)
-    parser.add_argument("--simulations", type=int, default=64)
-    parser.add_argument("--c-puct", type=float, default=1.5)
-    parser.add_argument("--dirichlet-alpha", type=float, default=0.3)
-    parser.add_argument("--dirichlet-frac", type=float, default=0.25)
-    parser.add_argument("--augment", action="store_true")
-    parser.add_argument("--torch-threads", type=int, default=0, help="CPU threads for PyTorch ops (0 = default)")
-    parser.add_argument("--dataloader-workers", type=int, default=0, help="DataLoader worker processes (0 = main process)")
-    parser.add_argument("--channels", type=int, default=128)
-    parser.add_argument("--blocks", type=int, default=8)
-    parser.add_argument("--resume", action="store_true")
 
-    # Telemetry (dashboard hosted)
-    parser.add_argument(
+    # ── Network Architecture ─────────────────────────────────────────────────
+    arch = parser.add_argument_group("Network Architecture")
+    arch.add_argument(
+        "--channels",
+        type=int,
+        default=128,
+        help="Width of the residual tower (feature-map depth). More channels → more capacity "
+             "but slower training/inference. 64–256 typical.",
+    )
+    arch.add_argument(
+        "--blocks",
+        type=int,
+        default=8,
+        help="Number of residual blocks. Deeper networks learn more complex patterns; 6–12 common for 15×15.",
+    )
+
+    # ── Self-Play (Data Generation) ──────────────────────────────────────────
+    sp = parser.add_argument_group("Self-Play (Data Generation)")
+    sp.add_argument(
+        "--episodes",
+        type=int,
+        default=200,
+        help="Total training iterations. Each episode: generate games → sample from replay → gradient steps.",
+    )
+    sp.add_argument(
+        "--games-per-episode",
+        type=int,
+        default=1,
+        help="Self-play games generated per episode. More games = more diversity per update but longer episodes.",
+    )
+    sp.add_argument(
+        "--simulations",
+        type=int,
+        default=64,
+        help="MCTS rollouts per move. Higher = stronger, sharper policies; 64–256 balances speed vs quality.",
+    )
+    sp.add_argument(
+        "--c-puct",
+        type=float,
+        default=1.5,
+        help="Exploration constant in PUCT formula. Higher encourages following the prior; "
+             "lower trusts value estimates more. 1–2 typical.",
+    )
+    sp.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature for move selection from visit counts. At τ=1 moves are proportional "
+             "to visits; as τ→0 it becomes greedy. High early → diversity; low late → quality.",
+    )
+    sp.add_argument(
+        "--temperature-decay",
+        type=float,
+        default=0.995,
+        help="Multiplicative decay applied each episode: τ_{e+1} = τ_e × decay. Gradually sharpens play.",
+    )
+    sp.add_argument(
+        "--min-temperature",
+        type=float,
+        default=0.1,
+        help="Floor for temperature schedule. Prevents fully greedy play which can hurt diversity late in training.",
+    )
+    sp.add_argument(
+        "--dirichlet-alpha",
+        type=float,
+        default=0.3,
+        help="Shape parameter of Dirichlet noise added to the root prior. Smaller α → spikier noise "
+             "(more aggressive exploration). For 15×15 boards 0.15–0.3 common.",
+    )
+    sp.add_argument(
+        "--dirichlet-frac",
+        type=float,
+        default=0.25,
+        help="Blend weight: P'(a) = (1−ε)P(a) + ε·Dir(α). 0.25 = 25%% noise; increase for more opening variety.",
+    )
+
+    # ── Replay Buffer & Training ─────────────────────────────────────────────
+    train_grp = parser.add_argument_group("Replay Buffer & Training")
+    train_grp.add_argument(
+        "--replay-size",
+        type=int,
+        default=50000,
+        help="Max samples in the circular buffer. Larger buffers keep older data longer; "
+             "tune to balance recency vs coverage.",
+    )
+    train_grp.add_argument(
+        "--min-replay",
+        type=int,
+        default=5000,
+        help="Warmup threshold. No gradient updates until buffer has at least this many samples, "
+             "preventing early overfitting to few games.",
+    )
+    train_grp.add_argument(
+        "--batch-size",
+        type=int,
+        default=128,
+        help="Samples per mini-batch. Larger batches stabilize gradients but need more memory.",
+    )
+    train_grp.add_argument(
+        "--batches-per-episode",
+        type=int,
+        default=8,
+        help="Gradient steps per episode. Controls how much you train on existing data vs generating new data.",
+    )
+    train_grp.add_argument(
+        "--lr",
+        type=float,
+        default=1e-3,
+        help="Adam learning rate. Start around 1e-3; decay or lower if loss plateaus/diverges.",
+    )
+    train_grp.add_argument(
+        "--value-loss-weight",
+        type=float,
+        default=1.0,
+        help="Coefficient on MSE value loss vs cross-entropy policy loss: L = L_π + w·L_v. "
+             "Increase if value head lags; decrease if policy collapses.",
+    )
+    train_grp.add_argument(
+        "--augment",
+        action="store_true",
+        help="Apply random dihedral symmetry (8 transformations) to each sample. Effectively 8× data; highly recommended.",
+    )
+
+    # ── Performance Tuning ───────────────────────────────────────────────────
+    perf = parser.add_argument_group("Performance Tuning")
+    perf.add_argument(
+        "--torch-threads",
+        type=int,
+        default=0,
+        help="CPU threads for intra-op parallelism (0 = PyTorch default). Limit on shared machines or if GPU is primary.",
+    )
+    perf.add_argument(
+        "--dataloader-workers",
+        type=int,
+        default=0,
+        help="Parallel processes loading batches. >0 can speed up CPU-bound augmentation; 0 keeps everything in main process.",
+    )
+
+    # ── Telemetry / Dashboard ────────────────────────────────────────────────
+    tele = parser.add_argument_group("Telemetry / Dashboard")
+    tele.add_argument(
         "--dashboard-url",
         type=str,
         default="",
-        help="If set, POST telemetry to a running dashboard at this base URL (e.g. http://127.0.0.1:8765)",
+        help="Base URL of a running dashboard (e.g. http://127.0.0.1:8787). Training POSTs metrics each episode for live plotting.",
     )
-    parser.add_argument(
+    tele.add_argument(
         "--dashboard-job-id",
         type=str,
         default="",
-        help="Job id used by the dashboard to group telemetry points (usually provided by dashboard).",
+        help="Identifier grouping telemetry points on the dashboard. Useful when multiple runs report to the same server.",
     )
 
-    # Backward compatibility: keep --telemetry flags but they no longer start a server.
-    parser.add_argument(
+    # ── Deprecated / Backward Compatibility ───────────────────────────────────
+    deprecated = parser.add_argument_group("Deprecated (Backward Compatibility)")
+    deprecated.add_argument(
         "--telemetry",
         action="store_true",
-        help="(Deprecated) Report telemetry to dashboard at --telemetry-host/--telemetry-port; no server is started.",
+        help="(Deprecated) Legacy flag; enables posting to --telemetry-host/--telemetry-port. Prefer --dashboard-url.",
     )
-    parser.add_argument("--telemetry-host", type=str, default="127.0.0.1")
-    parser.add_argument("--telemetry-port", type=int, default=8765)
+    deprecated.add_argument(
+        "--telemetry-host",
+        type=str,
+        default="127.0.0.1",
+        help="(Deprecated) Host for legacy telemetry mode.",
+    )
+    deprecated.add_argument(
+        "--telemetry-port",
+        type=int,
+        default=8765,
+        help="(Deprecated) Port for legacy telemetry mode.",
+    )
     return parser.parse_args()
 
 
