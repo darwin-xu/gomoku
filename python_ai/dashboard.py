@@ -210,6 +210,19 @@ _DASHBOARD_HTML = """<!doctype html>
       <canvas id="loss" width="1100" height="280"></canvas>
       <h3 style="margin:10px 0 6px;">Episode time (sec)</h3>
       <canvas id="time" width="1100" height="220"></canvas>
+      <h3 style="margin:10px 0 6px;">Policy snapshot (latest)</h3>
+      <div class="row" style="gap:10px; align-items:flex-start; flex-wrap:wrap;">
+        <canvas id="policyCanvas" width="360" height="360"></canvas>
+        <div class="small" id="policyMeta" style="min-width:220px;">Waiting for telemetry...</div>
+      </div>
+      <h3 style="margin:10px 0 6px;">Self-play trace (latest game)</h3>
+      <div class="row" style="gap:10px; align-items:flex-start; flex-wrap:wrap;">
+        <canvas id="traceCanvas" width="360" height="360"></canvas>
+        <div style="display:flex; flex-direction:column; gap:6px; min-width:240px;">
+          <input id="traceSlider" type="range" min="0" max="0" value="0" step="1" />
+          <div class="small" id="traceMeta">Waiting for telemetry...</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -398,26 +411,46 @@ async function refreshJobs() {
     opt.textContent = `${j.id} (${j.status})`;
     teleSel.appendChild(opt);
   }
-  if (runningTrainJobs.length === 0) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = 'No running training jobs';
-    teleSel.appendChild(opt);
-  }
-  // Choose previously selected if still present; else first running train job; else keep current selectedJobId
-  if (runningTrainJobs.some(j => j.id === prevSel)) {
-    teleSel.value = prevSel;
-  } else if (runningTrainJobs.length > 0) {
-    teleSel.value = runningTrainJobs[0].id;
-    selectedJobId = runningTrainJobs[0].id;
-  } else {
-    teleSel.value = '';
-  }
-  document.getElementById('teleJobHint').textContent = teleSel.value ? '' : 'Start a training job to see telemetry.';
+  await appendTelemetryJobOptions(teleSel, prevSel);
+  document.getElementById('teleJobHint').textContent = teleSel.value ? '' : 'Select a telemetry job id (CLI runs auto-appear once they post).';
 
   // Eval status pill
   const evalJob = data.jobs.find(j => j.id === selectedJobId && j.type === 'eval');
   if (evalJob) document.getElementById('evalStatus').textContent = evalJob.status;
+}
+
+async function appendTelemetryJobOptions(teleSel, prevSel) {
+  const existing = new Set(Array.from(teleSel.options).map(o => o.value));
+  try {
+    const data = await apiGet('/api/telemetry/jobs');
+    const jobs = data.jobs || [];
+    for (const j of jobs) {
+      if (!j.job_id || existing.has(j.job_id)) continue;
+      const opt = document.createElement('option');
+      opt.value = j.job_id;
+      opt.textContent = `${j.job_id} (telemetry)`;
+      teleSel.appendChild(opt);
+    }
+  } catch (e) {
+    console.error('Failed to load telemetry jobs', e);
+  }
+
+  // Choose previously selected if still present; else keep current; else first option
+  if (prevSel && Array.from(teleSel.options).some(o => o.value === prevSel)) {
+    teleSel.value = prevSel;
+    selectedJobId = prevSel;
+  } else if (!teleSel.value && teleSel.options.length > 0) {
+    teleSel.value = teleSel.options[0].value;
+    selectedJobId = teleSel.value;
+  }
+
+  if (teleSel.options.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No telemetry jobs yet';
+    teleSel.appendChild(opt);
+    teleSel.value = '';
+  }
 }
 
 async function refreshLog() {
@@ -455,6 +488,139 @@ function renderEvalTable(result) {
 // Telemetry
 const lossCanvas = document.getElementById('loss');
 const timeCanvas = document.getElementById('time');
+const policyCanvas = document.getElementById('policyCanvas');
+const policyMeta = document.getElementById('policyMeta');
+const traceCanvas = document.getElementById('traceCanvas');
+const traceSlider = document.getElementById('traceSlider');
+const traceMeta = document.getElementById('traceMeta');
+
+let latestTrace = null;
+
+function drawBoard(canvas, cfg) {
+  if (!canvas || !cfg) return;
+  const size = cfg.boardSize || 15;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0,0,w,h);
+
+  const pad = 12;
+  const cell = Math.min((w - 2*pad) / size, (h - 2*pad) / size);
+  const offsetX = (w - cell * size) / 2;
+  const offsetY = (h - cell * size) / 2;
+
+  // Heatmap background
+  if (cfg.heatmap && cfg.heatmap.length === size*size) {
+    const maxVal = Math.max(...cfg.heatmap, 0.0001);
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        const v = cfg.heatmap[r*size + c];
+        if (v <= 0) continue;
+        const alpha = Math.min(0.9, v / maxVal);
+        ctx.fillStyle = `rgba(255,99,71,${alpha})`;
+        ctx.fillRect(offsetX + c*cell, offsetY + r*cell, cell, cell);
+      }
+    }
+  }
+
+  ctx.strokeStyle = '#bbb';
+  for (let i = 0; i <= size; i++) {
+    const y = offsetY + i * cell;
+    const x = offsetX + i * cell;
+    ctx.beginPath();
+    ctx.moveTo(offsetX, y);
+    ctx.lineTo(offsetX + size*cell, y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, offsetY);
+    ctx.lineTo(x, offsetY + size*cell);
+    ctx.stroke();
+  }
+
+  const board = cfg.board || [];
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      const v = board[r*size + c] || 0;
+      if (!v) continue;
+      ctx.beginPath();
+      const cx = offsetX + (c + 0.5) * cell;
+      const cy = offsetY + (r + 0.5) * cell;
+      const radius = cell * 0.35;
+      ctx.fillStyle = v === 1 ? '#222' : '#f4f4f4';
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = 1.5;
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  if (cfg.lastMove) {
+    const { row, col } = cfg.lastMove;
+    ctx.strokeStyle = '#ffd54f';
+    ctx.lineWidth = 3;
+    const x0 = offsetX + col * cell;
+    const y0 = offsetY + row * cell;
+    ctx.strokeRect(x0 + 2, y0 + 2, cell - 4, cell - 4);
+  }
+}
+
+function renderPolicySnapshot(snap) {
+  if (!snap || !policyCanvas) return;
+  const size = snap.board_size || 15;
+  const board = Array.isArray(snap.board) ? snap.board : [];
+  const policy = Array.isArray(snap.policy) ? snap.policy : [];
+  if (!policy.length) {
+    policyMeta.textContent = 'No policy snapshot yet';
+    return;
+  }
+  drawBoard(policyCanvas, { boardSize: size, board, heatmap: policy });
+  let topIdx = 0;
+  let topVal = -1;
+  for (let i = 0; i < policy.length; i++) {
+    if (policy[i] > topVal) {
+      topVal = policy[i];
+      topIdx = i;
+    }
+  }
+  const row = Math.floor(topIdx / size);
+  const col = topIdx % size;
+  policyMeta.textContent = `Player ${snap.player_to_move || 1} → top move (${row}, ${col}) ${(topVal*100).toFixed(1)}%`;
+}
+
+function setTrace(trace) {
+  latestTrace = trace || null;
+  const moves = (trace && Array.isArray(trace.moves)) ? trace.moves : [];
+  const maxStep = Math.max(0, moves.length - 1);
+  if (traceSlider) {
+    traceSlider.max = String(maxStep);
+    traceSlider.value = String(maxStep);
+  }
+  renderTraceAt(Number(maxStep));
+}
+
+function renderTraceAt(step) {
+  if (!traceCanvas) return;
+  if (!latestTrace || !Array.isArray(latestTrace.moves) || latestTrace.moves.length === 0) {
+    const ctx = traceCanvas.getContext('2d');
+    ctx.clearRect(0,0,traceCanvas.width, traceCanvas.height);
+    traceMeta.textContent = 'Waiting for telemetry...';
+    return;
+  }
+  const size = latestTrace.board_size || 15;
+  const board = new Array(size*size).fill(0);
+  const clampedStep = Math.max(0, Math.min(step, latestTrace.moves.length - 1));
+  for (let i = 0; i <= clampedStep; i++) {
+    const m = latestTrace.moves[i];
+    if (!m) continue;
+    board[m.row * size + m.col] = m.player;
+  }
+  const lastMove = latestTrace.moves[clampedStep];
+  drawBoard(traceCanvas, { boardSize: size, board, lastMove });
+  const winner = latestTrace.winner === 0 ? 'draw' : (latestTrace.winner || 'unknown');
+  traceMeta.textContent = `Move ${clampedStep + 1} / ${latestTrace.moves.length} • winner: ${winner}`;
+}
 
 function drawSeries(canvas, series, opts) {
   const ctx = canvas.getContext('2d');
@@ -539,6 +705,16 @@ async function refreshTelemetry() {
 
   const timeSeries = points.map(p => ({ x: p.episode, y: [parseFloatOrNaN(p.episode_sec), parseFloatOrNaN(p.avg_ep_sec)] }));
   drawSeries(timeCanvas, timeSeries, { title: 'Time', labels: ['episode_sec','avg_ep_sec'], colors: ['#2ca02c', '#d62728'] });
+
+  const lastSnap = [...points].reverse().find(p => p.policy_snapshot);
+  if (lastSnap && lastSnap.policy_snapshot) {
+    renderPolicySnapshot(lastSnap.policy_snapshot);
+  }
+
+  const lastTrace = [...points].reverse().find(p => p.self_play_trace);
+  if (lastTrace && lastTrace.self_play_trace) {
+    setTrace(lastTrace.self_play_trace);
+  }
 }
 
 let teleTimer = null;
@@ -559,6 +735,9 @@ document.getElementById('teleJobSelect').addEventListener('change', () => {
   selectedJobId = document.getElementById('teleJobSelect').value || selectedJobId;
   refreshTelemetry();
 });
+if (traceSlider) {
+  traceSlider.addEventListener('input', () => renderTraceAt(Number(traceSlider.value)));
+}
 
 refreshModels();
 refreshJobs().then(() => refreshTelemetry().then(scheduleTelemetry));
@@ -597,6 +776,18 @@ class TelemetryStore:
         with self._lock:
             pts = list(self._points.get(job_id, deque()))
         return pts[-int(limit):]
+
+    def list_job_ids(self) -> List[Dict[str, Any]]:
+      with self._lock:
+        items = []
+        for jid, pts in self._points.items():
+          last_ts = 0.0
+          if pts:
+            last = pts[-1]
+            last_ts = float(last.get("ts", 0.0) or 0.0)
+          items.append({"job_id": jid, "points": len(pts), "last_ts": last_ts})
+      items.sort(key=lambda x: x.get("last_ts", 0.0), reverse=True)
+      return items
 
 
 class JobManager:
@@ -991,6 +1182,11 @@ def create_app(*, dashboard_host: str, dashboard_port: int) -> Flask:
             return jsonify({"job_id": job_id, "points": points})
 
         return jsonify({"job_id": None, "points": []})
+
+    @app.get("/api/telemetry/jobs")
+    def api_telemetry_jobs() -> Response:
+      jobs = telemetry_store.list_job_ids()
+      return jsonify({"jobs": jobs})
 
     return app
 

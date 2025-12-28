@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import numpy as np
 import torch
@@ -45,6 +45,56 @@ def play_self_game_mcts(
     dirichlet_frac: float,
     restrict_move_distance: int | None = 2,
 ) -> List[Sample]:
+    samples, _ = _play_self_game_mcts(
+        model=model,
+        device=device,
+        simulations=simulations,
+        temperature=temperature,
+        c_puct=c_puct,
+        dirichlet_alpha=dirichlet_alpha,
+        dirichlet_frac=dirichlet_frac,
+        restrict_move_distance=restrict_move_distance,
+        collect_trace=False,
+    )
+    return samples
+
+
+def play_self_game_mcts_with_trace(
+    model: PolicyValueNet,
+    device: torch.device,
+    simulations: int,
+    temperature: float,
+    c_puct: float,
+    dirichlet_alpha: float,
+    dirichlet_frac: float,
+    restrict_move_distance: int | None = 2,
+) -> Tuple[List[Sample], dict]:
+    samples, trace = _play_self_game_mcts(
+        model=model,
+        device=device,
+        simulations=simulations,
+        temperature=temperature,
+        c_puct=c_puct,
+        dirichlet_alpha=dirichlet_alpha,
+        dirichlet_frac=dirichlet_frac,
+        restrict_move_distance=restrict_move_distance,
+        collect_trace=True,
+    )
+    return samples, trace or {}
+
+
+def _play_self_game_mcts(
+    *,
+    model: PolicyValueNet,
+    device: torch.device,
+    simulations: int,
+    temperature: float,
+    c_puct: float,
+    dirichlet_alpha: float,
+    dirichlet_frac: float,
+    restrict_move_distance: int | None,
+    collect_trace: bool,
+) -> Tuple[List[Sample], Optional[dict]]:
     env = GomokuEnv()
     mcts = MCTS(
         model=model,
@@ -77,4 +127,11 @@ def play_self_game_mcts(
         else:
             z = 1.0 if env.winner == s.player_to_move else -1.0
         samples[i] = Sample(state=s.state, pi=s.pi, z=z, player_to_move=s.player_to_move)
-    return samples
+    trace = None
+    if collect_trace:
+        trace = {
+            "board_size": int(BOARD_SIZE),
+            "winner": int(env.winner or 0),
+            "moves": [{"row": m.row, "col": m.col, "player": int(m.player)} for m in env.move_history],
+        }
+    return samples, trace

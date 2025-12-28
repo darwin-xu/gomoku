@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from python_ai.gomoku_env import BOARD_SIZE
 from python_ai.model import PolicyValueNet, get_device, save_checkpoint, load_checkpoint, export_coreml
-from python_ai.self_play import Sample, apply_symmetry, play_self_game_mcts
+from python_ai.self_play import Sample, apply_symmetry, play_self_game_mcts, play_self_game_mcts_with_trace
 from python_ai.telemetry import make_telemetry
 
 
@@ -95,6 +95,20 @@ def make_dataloader(samples: List[Sample], batch_size: int, augment: bool) -> Da
         num_workers=getattr(make_dataloader, "_num_workers", 0),
         persistent_workers=getattr(make_dataloader, "_num_workers", 0) > 0,
     )
+
+
+def _policy_snapshot_from_sample(sample: Sample) -> dict:
+    state = sample.state
+    board_size = int(state.shape[1])
+    board = np.zeros((board_size, board_size), dtype=np.int8)
+    board[state[0] > 0.5] = int(sample.player_to_move)
+    board[state[1] > 0.5] = int(-sample.player_to_move)
+    return {
+        "board_size": board_size,
+        "board": board.reshape(-1).astype(np.int8).tolist(),
+        "policy": sample.pi.astype(np.float32).tolist(),
+        "player_to_move": int(sample.player_to_move),
+    }
 
 
 def train(args: argparse.Namespace) -> None:
@@ -178,16 +192,37 @@ def train(args: argparse.Namespace) -> None:
             temperature = max(args.min_temperature, args.temperature * (args.temperature_decay ** (episode - 1)))
 
         episode_samples: List[Sample] = []
+        policy_snapshot: Optional[dict] = None
+        self_play_trace: Optional[dict] = None
+        rich_telemetry = bool(getattr(telemetry, "cfg", None) and telemetry.cfg.enabled)
+
         for _ in range(max(1, int(args.games_per_episode))):
-            game_samples = play_self_game_mcts(
-                model=model,
-                device=device,
-                simulations=args.simulations,
-                temperature=temperature,
-                c_puct=args.c_puct,
-                dirichlet_alpha=args.dirichlet_alpha,
-                dirichlet_frac=args.dirichlet_frac,
-            )
+            need_trace = rich_telemetry and self_play_trace is None
+            if need_trace:
+                game_samples, trace = play_self_game_mcts_with_trace(
+                    model=model,
+                    device=device,
+                    simulations=args.simulations,
+                    temperature=temperature,
+                    c_puct=args.c_puct,
+                    dirichlet_alpha=args.dirichlet_alpha,
+                    dirichlet_frac=args.dirichlet_frac,
+                )
+                if trace:
+                    self_play_trace = trace
+            else:
+                game_samples = play_self_game_mcts(
+                    model=model,
+                    device=device,
+                    simulations=args.simulations,
+                    temperature=temperature,
+                    c_puct=args.c_puct,
+                    dirichlet_alpha=args.dirichlet_alpha,
+                    dirichlet_frac=args.dirichlet_frac,
+                )
+            if policy_snapshot is None and game_samples:
+                policy_snapshot = _policy_snapshot_from_sample(game_samples[0])
+
             episode_samples.extend(game_samples)
         replay.extend(episode_samples)
 
@@ -251,7 +286,7 @@ def train(args: argparse.Namespace) -> None:
         est_1000_sec = avg_ep_sec * 1000.0
         est_1000_hr = est_1000_sec / 3600.0
 
-        telemetry.log({
+        point = {
             "episode": int(episode),
             "status": status,
             "moves": int(len(episode_samples)),
@@ -265,7 +300,13 @@ def train(args: argparse.Namespace) -> None:
             "episode_sec": float(ep_sec),
             "avg_ep_sec": float(avg_ep_sec),
             "est_1000_ep_hr": float(est_1000_hr),
-        })
+        }
+        if policy_snapshot is not None:
+            point["policy_snapshot"] = policy_snapshot
+        if self_play_trace is not None:
+            point["self_play_trace"] = self_play_trace
+
+        telemetry.log(point)
         print(
             f"Episode {episode}: status={status}, moves={len(episode_samples)}, games={int(args.games_per_episode)}, sims={args.simulations}, temp={temperature:.3f}, "
             f"policy_loss={policy_str}, value_loss={value_str}, replay={len(replay)}/{args.min_replay}, "
