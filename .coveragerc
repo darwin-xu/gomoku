@@ -1,0 +1,19 @@
+[run]
+source = python_ai
+omit =
+    python_ai/tests/*
+    python_ai/__pycache__/*
+    python_ai/checkpoints/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+show_missing = true
+precision = 2
+
+[html]
+directory = htmlcov
