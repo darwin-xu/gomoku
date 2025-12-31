@@ -126,6 +126,43 @@ _DASHBOARD_HTML = """<!doctype html>
     </div>
 
     <div class="card wide">
+      <div class="row" style="align-items:center; justify-content:space-between;">
+        <strong>Tournament Game Viewer</strong>
+        <button id="refreshTournaments">Refresh</button>
+      </div>
+      <div class="small" style="margin-top:6px;">Review saved tournament games move by move.</div>
+      <div class="row" style="margin-top:10px; gap:10px; align-items:flex-start;">
+        <div style="min-width:280px;">
+          <label class="small">Tournament
+            <select id="tournamentSelect" style="min-width:240px;"></select>
+          </label>
+          <div style="margin-top:8px;">
+            <label class="small">Game
+              <select id="gameSelect" style="min-width:240px;"></select>
+            </label>
+          </div>
+          <div style="margin-top:10px; max-height:180px; overflow:auto;">
+            <table id="tournamentGamesTable" style="font-size:12px;">
+              <thead>
+                <tr><th>#</th><th>Match</th><th>Black</th><th>Winner</th><th>Moves</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <canvas id="gameViewerCanvas" width="400" height="400"></canvas>
+          <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+            <button id="gameViewerPrev">◀ Prev</button>
+            <input id="gameViewerSlider" type="range" min="0" max="0" value="0" step="1" style="flex:1; min-width:150px;"/>
+            <button id="gameViewerNext">Next ▶</button>
+          </div>
+          <div class="small" style="margin-top:6px;" id="gameViewerMeta">Select a tournament and game to view.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card wide">
       <strong>Training</strong>
       <div class="small" style="margin-top:6px;">Starts python_ai.train as a background job.</div>
       <div class="row" style="margin-top:10px;">
@@ -485,6 +522,161 @@ function renderEvalTable(result) {
   }
 }
 
+// Tournament Game Viewer
+const tournamentSelect = document.getElementById('tournamentSelect');
+const gameSelect = document.getElementById('gameSelect');
+const tournamentGamesTableBody = document.querySelector('#tournamentGamesTable tbody');
+const gameViewerCanvas = document.getElementById('gameViewerCanvas');
+const gameViewerSlider = document.getElementById('gameViewerSlider');
+const gameViewerMeta = document.getElementById('gameViewerMeta');
+
+let currentTournamentData = null;
+let currentGameData = null;
+let currentMoveIndex = 0;
+
+async function refreshTournaments() {
+  const data = await apiGet('/api/tournament/list');
+  const tournaments = data.tournaments || [];
+  tournamentSelect.innerHTML = '';
+  if (tournaments.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No tournaments yet';
+    tournamentSelect.appendChild(opt);
+    return;
+  }
+  for (const t of tournaments) {
+    const opt = document.createElement('option');
+    opt.value = t.tournament_id;
+    opt.textContent = `${t.tournament_id} (${t.total_games} games)`;
+    tournamentSelect.appendChild(opt);
+  }
+  if (tournaments.length > 0) {
+    await loadTournament(tournaments[0].tournament_id);
+  }
+}
+
+async function loadTournament(tournamentId) {
+  if (!tournamentId) return;
+  try {
+    const data = await apiGet(`/api/tournament/${tournamentId}`);
+    currentTournamentData = data;
+    renderTournamentGames(data.games || []);
+    if (data.games && data.games.length > 0) {
+      populateGameSelect(data.games);
+      await loadGame(0);
+    }
+  } catch (e) {
+    console.error('Failed to load tournament:', e);
+    currentTournamentData = null;
+  }
+}
+
+function populateGameSelect(games) {
+  gameSelect.innerHTML = '';
+  for (let i = 0; i < games.length; i++) {
+    const g = games[i];
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = `#${i}: ${g.model_a} vs ${g.model_b} (${g.winner_name})`;
+    gameSelect.appendChild(opt);
+  }
+}
+
+function renderTournamentGames(games) {
+  tournamentGamesTableBody.innerHTML = '';
+  for (const g of games) {
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('click', () => loadGame(g.game_index));
+
+    const tdIdx = document.createElement('td');
+    tdIdx.textContent = String(g.game_index);
+
+    const tdMatch = document.createElement('td');
+    tdMatch.textContent = g.match || `${g.model_a} vs ${g.model_b}`;
+    tdMatch.style.fontSize = '11px';
+
+    const tdBlack = document.createElement('td');
+    tdBlack.textContent = g.a_is_black ? 'A' : 'B';
+
+    const tdWinner = document.createElement('td');
+    tdWinner.textContent = g.winner_name;
+    tdWinner.style.fontWeight = 'bold';
+    tdWinner.style.color = g.winner_name === 'A' ? '#2ca02c' : (g.winner_name === 'B' ? '#d62728' : '#666');
+
+    const tdMoves = document.createElement('td');
+    tdMoves.textContent = String(g.total_moves);
+
+    tr.append(tdIdx, tdMatch, tdBlack, tdWinner, tdMoves);
+    tournamentGamesTableBody.appendChild(tr);
+  }
+}
+
+async function loadGame(gameIndex) {
+  if (!currentTournamentData || !currentTournamentData.games) return;
+  const games = currentTournamentData.games;
+  if (gameIndex < 0 || gameIndex >= games.length) return;
+
+  currentGameData = games[gameIndex];
+  currentMoveIndex = currentGameData.moves.length - 1;
+  gameSelect.value = String(gameIndex);
+
+  gameViewerSlider.max = String(Math.max(0, currentGameData.moves.length - 1));
+  gameViewerSlider.value = String(currentMoveIndex);
+
+  renderGameAt(currentMoveIndex);
+}
+
+function renderGameAt(moveIndex) {
+  if (!gameViewerCanvas || !currentGameData) return;
+
+  const size = currentGameData.board_size || 15;
+  const board = new Array(size * size).fill(0);
+  const moves = currentGameData.moves || [];
+  const clampedIndex = Math.max(-1, Math.min(moveIndex, moves.length - 1));
+
+  for (let i = 0; i <= clampedIndex; i++) {
+    const m = moves[i];
+    if (m) board[m.row * size + m.col] = m.player;
+  }
+
+  const lastMove = clampedIndex >= 0 ? moves[clampedIndex] : null;
+  drawBoard(gameViewerCanvas, { boardSize: size, board, lastMove });
+
+  const moveInfo = clampedIndex >= 0 && moves[clampedIndex]
+    ? `Move ${clampedIndex + 1}: ${moves[clampedIndex].agent} plays (${moves[clampedIndex].row}, ${moves[clampedIndex].col})`
+    : 'Start position';
+
+  gameViewerMeta.innerHTML = `
+    <strong>${currentGameData.model_a}</strong> (A) vs <strong>${currentGameData.model_b}</strong> (B)<br>
+    A is ${currentGameData.a_is_black ? 'Black ●' : 'White ○'} | Winner: <strong>${currentGameData.winner_name}</strong><br>
+    ${moveInfo} | Total: ${moves.length} moves
+  `;
+}
+
+document.getElementById('refreshTournaments').addEventListener('click', refreshTournaments);
+tournamentSelect.addEventListener('change', () => loadTournament(tournamentSelect.value));
+gameSelect.addEventListener('change', () => loadGame(Number(gameSelect.value)));
+gameViewerSlider.addEventListener('input', () => {
+  currentMoveIndex = Number(gameViewerSlider.value);
+  renderGameAt(currentMoveIndex);
+});
+document.getElementById('gameViewerPrev').addEventListener('click', () => {
+  if (currentMoveIndex > -1) {
+    currentMoveIndex--;
+    gameViewerSlider.value = String(Math.max(0, currentMoveIndex));
+    renderGameAt(currentMoveIndex);
+  }
+});
+document.getElementById('gameViewerNext').addEventListener('click', () => {
+  if (currentGameData && currentMoveIndex < currentGameData.moves.length - 1) {
+    currentMoveIndex++;
+    gameViewerSlider.value = String(currentMoveIndex);
+    renderGameAt(currentMoveIndex);
+  }
+});
+
 // Telemetry
 const lossCanvas = document.getElementById('loss');
 const timeCanvas = document.getElementById('time');
@@ -740,6 +932,7 @@ if (traceSlider) {
 }
 
 refreshModels();
+refreshTournaments();
 refreshJobs().then(() => refreshTelemetry().then(scheduleTelemetry));
 setInterval(refreshJobs, 1000);
 </script>
@@ -996,10 +1189,10 @@ def _elo_expected(r_a: float, r_b: float) -> float:
 
 
 def run_tournament(*, models: List[str], games: int, sims: int, c_puct: float, log_path: Path) -> Dict[str, Any]:
-    """Pairwise round-robin with a simple Elo update."""
+    """Pairwise round-robin with a simple Elo update. Saves all games for later review."""
     import torch
 
-    from python_ai.eval import MCTSAgent, _play_game
+    from python_ai.eval import MCTSAgent, _play_game_with_record
     from python_ai.model import get_device
 
     device_cfg = get_device()
@@ -1017,11 +1210,16 @@ def run_tournament(*, models: List[str], games: int, sims: int, c_puct: float, l
 
     k_factor = 24.0
 
+    # Collect all games for later review
+    all_games: List[Dict[str, Any]] = []
+    tournament_id = log_path.stem  # Use job id as tournament id
+
     with log_path.open("a", encoding="utf-8") as lf:
         lf.write(f"Device: {device}\n")
         lf.write(f"Models: {len(paths)}  games_per_pair={int(games)} sims={int(sims)} c_puct={float(c_puct)}\n\n")
         lf.flush()
 
+        game_index = 0
         for i in range(len(paths)):
             for j in range(i + 1, len(paths)):
                 a_key = str(paths[i])
@@ -1034,7 +1232,21 @@ def run_tournament(*, models: List[str], games: int, sims: int, c_puct: float, l
 
                 for g in range(int(games)):
                     a_is_black = (g % 2 == 0)
-                    winner = _play_game(a, b, a_is_black=a_is_black)
+                    winner, game_rec = _play_game_with_record(
+                        a, b,
+                        a_is_black=a_is_black,
+                        model_a_name=Path(a_key).name,
+                        model_b_name=Path(b_key).name,
+                    )
+
+                    # Store game record
+                    game_data = game_rec.to_dict()
+                    game_data["game_index"] = game_index
+                    game_data["tournament_id"] = tournament_id
+                    game_data["match"] = f"{Path(a_key).name} vs {Path(b_key).name}"
+                    game_data["game_in_match"] = g
+                    all_games.append(game_data)
+                    game_index += 1
 
                     if winner == 1:
                         record[a_key]["wins"] += 1
@@ -1071,7 +1283,22 @@ def run_tournament(*, models: List[str], games: int, sims: int, c_puct: float, l
     ]
     ranking.sort(key=lambda r: r["elo"], reverse=True)
 
-    return {"ranking": ranking, "record": record}
+    # Save all games to JSON file
+    games_file = log_path.with_suffix(".games.json")
+    games_data = {
+        "tournament_id": tournament_id,
+        "models": [_safe_relpath(Path(p)) for p in paths],
+        "games_per_pair": games,
+        "sims": sims,
+        "c_puct": c_puct,
+        "total_games": len(all_games),
+        "ranking": ranking,
+        "games": all_games,
+    }
+    with games_file.open("w", encoding="utf-8") as f:
+        json.dump(games_data, f, indent=2)
+
+    return {"ranking": ranking, "record": record, "games_file": str(games_file)}
 
 
 def create_app(*, dashboard_host: str, dashboard_port: int) -> Flask:
@@ -1123,6 +1350,68 @@ def create_app(*, dashboard_host: str, dashboard_port: int) -> Flask:
 
         job = jobs.create_eval_job([str(m) for m in models], games=games, sims=sims, c_puct=c_puct)
         return jsonify({"job_id": job.id})
+
+    @app.get("/api/tournament/list")
+    def api_tournament_list() -> Response:
+        """List all saved tournament game files."""
+        jobs_dir = (CHECKPOINT_DIR / "jobs").resolve()
+        if not jobs_dir.exists():
+            return jsonify({"tournaments": []})
+        game_files = sorted(jobs_dir.glob("*.games.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        tournaments = []
+        for gf in game_files:
+            try:
+                with gf.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                tournaments.append({
+                    "file": str(gf.name),
+                    "tournament_id": data.get("tournament_id", gf.stem.replace(".games", "")),
+                    "models": data.get("models", []),
+                    "total_games": data.get("total_games", 0),
+                    "games_per_pair": data.get("games_per_pair", 0),
+                    "sims": data.get("sims", 0),
+                    "mtime": gf.stat().st_mtime,
+                })
+            except Exception:
+                continue
+        return jsonify({"tournaments": tournaments})
+
+    @app.get("/api/tournament/<tournament_id>")
+    def api_tournament_detail(tournament_id: str) -> Response:
+        """Get full tournament data including all games."""
+        jobs_dir = (CHECKPOINT_DIR / "jobs").resolve()
+        # Try to find the games file
+        game_file = jobs_dir / f"{tournament_id}.games.json"
+        if not game_file.exists():
+            # Try with eval- prefix
+            game_file = jobs_dir / f"eval-{tournament_id}.games.json"
+        if not game_file.exists():
+            return jsonify({"error": "Tournament not found"}), 404
+        try:
+            with game_file.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return jsonify(data)
+        except Exception as e:
+            return jsonify({"error": f"Failed to load: {e}"}), 500
+
+    @app.get("/api/tournament/<tournament_id>/game/<int:game_index>")
+    def api_tournament_game(tournament_id: str, game_index: int) -> Response:
+        """Get a single game from a tournament."""
+        jobs_dir = (CHECKPOINT_DIR / "jobs").resolve()
+        game_file = jobs_dir / f"{tournament_id}.games.json"
+        if not game_file.exists():
+            game_file = jobs_dir / f"eval-{tournament_id}.games.json"
+        if not game_file.exists():
+            return jsonify({"error": "Tournament not found"}), 404
+        try:
+            with game_file.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            games = data.get("games", [])
+            if game_index < 0 or game_index >= len(games):
+                return jsonify({"error": "Game index out of range"}), 404
+            return jsonify({"game": games[game_index], "total_games": len(games)})
+        except Exception as e:
+            return jsonify({"error": f"Failed to load: {e}"}), 500
 
     @app.post("/api/train/start")
     def api_train_start() -> Response:

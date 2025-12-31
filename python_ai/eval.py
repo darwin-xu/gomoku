@@ -59,6 +59,31 @@ class MCTSAgent:
         return int(action)
 
 
+@dataclass
+class GameRecord:
+    """Full record of a single game for later review."""
+    model_a: str
+    model_b: str
+    a_is_black: bool
+    moves: list  # List of {"move_num": int, "row": int, "col": int, "player": int, "agent": str}
+    winner: int  # 1 = A wins, -1 = B wins, 0 = draw
+    winner_name: str  # "A", "B", or "draw"
+    total_moves: int
+    board_size: int = BOARD_SIZE
+
+    def to_dict(self) -> Dict:
+        return {
+            "model_a": self.model_a,
+            "model_b": self.model_b,
+            "a_is_black": self.a_is_black,
+            "moves": self.moves,
+            "winner": self.winner,
+            "winner_name": self.winner_name,
+            "total_moves": self.total_moves,
+            "board_size": self.board_size,
+        }
+
+
 def _play_game(a: MCTSAgent, b: MCTSAgent, *, a_is_black: bool) -> int:
     """Return winner label: 1 means A wins, -1 means B wins, 0 draw."""
     env = GomokuEnv()
@@ -85,6 +110,75 @@ def _play_game(a: MCTSAgent, b: MCTSAgent, *, a_is_black: bool) -> int:
     if (env.winner == 1 and a_is_black) or (env.winner == -1 and not a_is_black):
         return 1
     return -1
+
+
+def _play_game_with_record(
+    a: MCTSAgent,
+    b: MCTSAgent,
+    *,
+    a_is_black: bool,
+    model_a_name: str,
+    model_b_name: str,
+) -> Tuple[int, GameRecord]:
+    """Play a game and return (winner_label, GameRecord) with full move history."""
+    env = GomokuEnv()
+    moves = []
+    move_num = 0
+
+    while env.winner is None:
+        current_player = env.current_player  # +1 black, -1 white
+        if current_player == 1:
+            agent = a if a_is_black else b
+            agent_name = "A" if a_is_black else "B"
+        else:
+            agent = b if a_is_black else a
+            agent_name = "B" if a_is_black else "A"
+
+        action = agent.choose_action(env)
+        row, col = divmod(action, BOARD_SIZE)
+        ok = env.step(row, col)
+
+        moves.append({
+            "move_num": move_num,
+            "row": row,
+            "col": col,
+            "player": current_player,
+            "agent": agent_name,
+        })
+        move_num += 1
+
+        if not ok:
+            winner = -1 if agent is a else 1
+            winner_name = "B" if winner == -1 else "A"
+            return winner, GameRecord(
+                model_a=model_a_name,
+                model_b=model_b_name,
+                a_is_black=a_is_black,
+                moves=moves,
+                winner=winner,
+                winner_name=winner_name,
+                total_moves=len(moves),
+            )
+
+    if env.winner == 0:
+        winner = 0
+        winner_name = "draw"
+    elif (env.winner == 1 and a_is_black) or (env.winner == -1 and not a_is_black):
+        winner = 1
+        winner_name = "A"
+    else:
+        winner = -1
+        winner_name = "B"
+
+    return winner, GameRecord(
+        model_a=model_a_name,
+        model_b=model_b_name,
+        a_is_black=a_is_black,
+        moves=moves,
+        winner=winner,
+        winner_name=winner_name,
+        total_moves=len(moves),
+    )
 
 
 def eval_arena(args: argparse.Namespace) -> None:
